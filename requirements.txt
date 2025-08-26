@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+pydantic==2.*
+python-multipart
+pymongo
+pydantic-settings
+pypdf
+docx2txt
+# modelos
+torch
+transformers
+accelerate
+sentencepiece

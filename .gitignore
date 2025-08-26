@@ -1,0 +1,49 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+*.log
+
+# --- Entornos ---
+.venv/
+env/
+venv/
+ENV/
+*.env
+.env.*
+
+# --- Jupyter / notebooks ---
+.ipynb_checkpoints/
+*.ipynb
+
+# --- VSCode ---
+.vscode/
+*.code-workspace
+
+# --- Docker ---
+/data/
+docker-compose.override.yml
+
+# --- Tests / Coverage ---
+.coverage
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+
+# --- Build ---
+dist/
+build/
+*.egg
+
+# --- MacOS ---
+.DS_Store
+
+# --- Otros temporales ---
+*.swp
+*.swo
+*.tmp
