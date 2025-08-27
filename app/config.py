@@ -1,5 +1,7 @@
+# app/config.py
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import List
 
 from pydantic import Field
@@ -8,34 +10,33 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # App
-    app_name: str = "MedAI Backend"
-    environment: str = "dev"
-    host: str = "0.0.0.0"
-    port: int = 8000
-    log_level: str = "info"
+    app_name: str = Field(default="MedAI Backend", env="APP_NAME")
+    environment: str = Field(default="dev", env="ENVIRONMENT")
+    host: str = Field(default="0.0.0.0", env="HOST")
+    port: int = Field(default=8000, env="PORT")
+    log_level: str = Field(default="info", env="LOG_LEVEL")
 
-    # CORS (lista separada por comas en .env)
-    cors_origins: List[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    # CORS
+    cors_origins: List[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
 
     # Persistencia
-    mongodb_uri: str = "mongodb://localhost:27017"
-    mongodb_db: str = "medai"
-    save_results: bool = True
+    mongodb_uri: str = Field(default="mongodb://mongo:27017", env="MONGODB_URI")
+    mongodb_db: str = Field(default="medai", env="MONGODB_DB")
+    save_results: bool = Field(default=True, env="SAVE_RESULTS")
 
     # Modelos
     default_model: str = "transformer"
-    models_enabled: List[str] = Field(
-        default_factory=lambda: ["lstm", "transformer", "llm"]
-    )
+    models_enabled: List[str] = ["lstm", "transformer", "llm"]
 
     model_config = SettingsConfigDict(
         env_file=".env.dev",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        env_ignore_empty=True,
     )
-
-
-from functools import lru_cache
 
 
 @lru_cache

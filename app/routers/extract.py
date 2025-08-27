@@ -1,3 +1,4 @@
+# app/routers/extract.py
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -18,7 +19,6 @@ async def extract(
     text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     model: str = Form(...),
-    threshold: Optional[float] = Form(0.5),
     save: Optional[bool] = Form(True),
     db: Database = Depends(get_db),
     settings: Settings = Depends(settings_dep),
@@ -30,14 +30,12 @@ async def extract(
         content = await file.read()
         text = read_any_to_text(file.filename, content)
 
-    result = extract_from_text(
-        text or "", model=model or settings.default_model, threshold=threshold
-    )
+    res = extract_from_text(text or "", model=model or settings.default_model)
 
     if save and settings.save_results:
-        save_result(db=db, payload=text or "", result=result, model=model)
+        save_result(db=db, payload=text or "", result=res, model=model)
 
-    return result
+    return res
 
 
 @router.post("/extract-batch", response_model=List[BatchItem])

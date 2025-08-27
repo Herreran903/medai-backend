@@ -4,10 +4,13 @@ pydantic==2.*
 python-multipart
 pymongo
 pydantic-settings
-pypdf
 docx2txt
+pymupdf
 # modelos
 torch
 transformers
 accelerate
 sentencepiece
+peft>=0.10.0
+safetensors>=0.4.3
+huggingface_hub>=0.24

@@ -13,6 +13,7 @@ class Entity(BaseModel):
 
 
 class ExtractResponse(BaseModel):
+    text: str
     entities: List[Entity] = Field(default_factory=list)
     meta: Dict[str, Any] = {}
 
