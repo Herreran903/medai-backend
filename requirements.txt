@@ -14,3 +14,5 @@ sentencepiece
 peft>=0.10.0
 safetensors>=0.4.3
 huggingface_hub>=0.24
+googletrans==4.0.0-rc1
+rapidfuzz>=3.0.0

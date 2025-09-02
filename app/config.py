@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # Modelos
     default_model: str = "transformer"
     models_enabled: List[str] = ["lstm", "transformer", "llm"]
+
+    # 🔑 API Key de UMLS
+    umls_apikey: Optional[str] = Field(default=None, env="UMLS_APIKEY")
 
     model_config = SettingsConfigDict(
         env_file=".env.dev",
