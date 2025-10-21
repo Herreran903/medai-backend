@@ -16,3 +16,5 @@ safetensors>=0.4.3
 huggingface_hub>=0.24
 googletrans==4.0.0-rc1
 rapidfuzz>=3.0.0
+deep-translator>=1.11.4
+sentence-transformers>=2.6.0

@@ -10,15 +10,13 @@ from pymongo.database import Database
 from app.config import Settings, get_settings
 
 
-# ---- Settings como dependencia ----
 def settings_dep() -> Settings:
     return get_settings()
 
 
-# ---- MongoDB (cliente cacheado) ----
 @lru_cache
 def _get_mongo_client_cached(uri: str) -> MongoClient:
-    return MongoClient(uri)
+    return MongoClient(uri, tz_aware=True, uuidRepresentation="standard")
 
 
 def get_mongo_client(settings: Settings = Depends(settings_dep)) -> MongoClient:
@@ -33,6 +31,5 @@ def get_db(
     yield db
 
 
-# ---- Helpers opcionales ----
 def get_cors_origins(settings: Settings = Depends(settings_dep)) -> Iterable[str]:
     return settings.cors_origins

@@ -1,4 +1,3 @@
-# app/services/normalizer.py
 from __future__ import annotations
 
 import os
@@ -13,17 +12,15 @@ from rapidfuzz import fuzz
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from app.services.semantic_sim import sim_texts
+from app.services.translator import translate_es_to_en
+
 UMLS_APIKEY = os.getenv("UMLS_APIKEY")
 UMLS_BASE = "https://uts-ws.nlm.nih.gov"
 UMLS_VER = "current"
 
 TYPE_TO_SABS: Dict[str, List[str]] = {
-    "MEDICAMENTO": ["RXNORM", "SNOMEDCT_US"],
-    "CANCER": ["SNOMEDCT_US", "ICD10CM"],
-    "TRATAMIENTO": ["SNOMEDCT_US"],
-    "CIRUGIA": ["SNOMEDCT_US"],
-    "TNM": ["SNOMEDCT_US"],
-    "GLEASON": ["SNOMEDCT_US"],
+    "DX": ["SNOMEDCT_US", "ICD10CM"],
 }
 
 TTY_RANK = {"PT": 3, "FN": 2, "SY": 1}
@@ -101,6 +98,35 @@ def _string_sim_bilingual(span_es: str, name_en: str) -> float:
     return max(0.0, min(1.0, score))
 
 
+def _string_sim_semantic(span_es: str, name_en: str) -> float:
+    """
+    Similaridad híbrida sin traducción:
+    - Embeddings multilingües (ES ↔ EN)
+    - Fuzzy estricto (WRatio / token_sort_ratio)
+    - Jaccard como ancla de solapamiento
+    """
+    if not span_es or not name_en:
+        return 0.0
+
+    span_n = _norm(span_es)
+    name_n = _norm(name_en)
+
+    s_emb = sim_texts(span_n, name_n)  # 0..1
+    s_wr = fuzz.WRatio(span_n, name_n) / 100.0  # 0..1
+    s_ts = fuzz.token_sort_ratio(span_n, name_n) / 100.0
+    s_jac = _jaccard(span_n, name_n)
+
+    base = max(s_wr, s_ts)
+    hybrid = 0.6 * s_emb + 0.3 * base + 0.1 * s_jac
+
+    la, lb = max(1, len(span_n)), max(1, len(name_n))
+    ratio = min(la, lb) / max(la, lb)
+    penalty = 0.0 if ratio >= 0.35 else (0.35 - ratio) * 0.3
+
+    score = max(0.0, min(1.0, hybrid - penalty))
+    return score
+
+
 def _passes_vsac(system: str, code: str, white: Optional[Dict[str, set]]) -> bool:
     if not white:
         return True
@@ -140,9 +166,9 @@ def _get(url: str, params: dict, timeout: int = 30) -> dict:
 
 @lru_cache(maxsize=4096)
 def umls_search_cuis(query: str, page_size: int = 25) -> List[Tuple[str, str, float]]:
-    query_en = translate_es_to_en(query)  # 🔄 traducir aquí
+    # query_en = translate_es_to_en(query)
     url = f"{UMLS_BASE}/rest/search/{UMLS_VER}"
-    js = _get(url, {"string": query_en, "searchType": "words", "pageSize": page_size})
+    js = _get(url, {"string": query, "searchType": "words", "pageSize": page_size})
     results = js.get("result", {}).get("results", []) or []
     out: List[Tuple[str, str, float]] = []
     for it in results:
@@ -150,7 +176,7 @@ def umls_search_cuis(query: str, page_size: int = 25) -> List[Tuple[str, str, fl
         name = it.get("name") or ""
         if not ui or not ui.startswith("C"):
             continue
-        sim = _string_sim_bilingual(query, name)
+        sim = _string_sim_semantic(query, name)
         out.append((ui, name, sim))
     out.sort(key=lambda x: x[2], reverse=True)
     return out
@@ -178,13 +204,6 @@ def umls_atoms_for_cui(
             }
         )
     return out
-
-
-def translate_es_to_en(text: str) -> str:
-    from googletrans import Translator
-
-    tr = Translator()
-    return tr.translate(text, src="es", dest="en").text
 
 
 def pick_best_atom(atoms: List[Dict], target_priority: List[str]) -> Optional[Dict]:
@@ -217,6 +236,12 @@ def normalize_entities(entities: List[Dict], opts: NormOptions) -> List[Dict]:
     normalized = []
     for e in entities:
         ent_type = e.get("type", "")
+
+        if ent_type != "DX":
+            normalized.append(e)
+            continue
+
+        # (si mantienes restrict_types activas, este chequeo ya es redundante)
         if opts.restrict_types and ent_type not in opts.restrict_types:
             normalized.append(e)
             continue
@@ -228,7 +253,6 @@ def normalize_entities(entities: List[Dict], opts: NormOptions) -> List[Dict]:
 
         span = e.get("text") or ""
         candidates = umls_search_cuis(span, page_size=opts.max_candidates)
-
         candidates = [
             (cui, name, sim)
             for cui, name, sim in candidates
@@ -243,13 +267,16 @@ def normalize_entities(entities: List[Dict], opts: NormOptions) -> List[Dict]:
             best = pick_best_atom(atoms, target_priority)
             if not best:
                 continue
+
             system, code, disp = best["sab"], best["code"], best.get("name")
             if not _passes_vsac(system, code, opts.vsac_whitelists):
                 continue
+
             sab_bonus = (len(target_priority) - target_priority.index(system)) * 0.02
             tty_bonus = 0.02 if (best.get("tty") == "PT") else 0.0
-            sim_to_disp = _string_sim_bilingual(span, disp or name or "")
+            sim_to_disp = _string_sim_semantic(span, disp or name or "")
             final = max(base_sim, sim_to_disp) + sab_bonus + tty_bonus
+
             codes.append(
                 {
                     "system": system,
@@ -270,6 +297,7 @@ def normalize_entities(entities: List[Dict], opts: NormOptions) -> List[Dict]:
                 seen.add(key)
                 dedup.append(c)
             e = {**e, "codes": dedup, "code": dedup[0]["code"]}
+
         normalized.append(e)
 
     return normalized
