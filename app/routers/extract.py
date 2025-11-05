@@ -4,8 +4,9 @@
 # como base de datos.
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 
+import json
 from bson import ObjectId
 from fastapi import (
     APIRouter,
@@ -168,6 +169,7 @@ async def extract_batch(
     normalize: Optional[bool] = Form(False),  # Normalización de entidades
     systems_csv: Optional[str] = Form(None),  # Sistemas específicos en formato CSV
     restrict_types_csv: Optional[str] = Form(None),  # Tipos de entidades a restringir
+    notes_meta: Optional[str] = Form(None),  # JSON con metadatos por archivo
     db: Database = Depends(get_db),  # Dependencia para obtener la base de datos
     settings: Settings = Depends(settings_dep),  # Configuración global
 ):
@@ -179,14 +181,43 @@ async def extract_batch(
     systems = _parse_csv(systems_csv)
     restrict_types = _parse_csv(restrict_types_csv)
 
-    items: List[BatchAckItem] = (
-        []
-    )  # Lista para almacenar los resultados de cada archivo
+    # Parseo de metadatos por archivo (notes_meta: JSON con filename, episode_id, note_date)
+    meta_by_filename: Dict[str, Dict[str, Optional[str]]] = {}
+    if notes_meta:
+        try:
+            raw = json.loads(notes_meta)
+            if isinstance(raw, list):
+                for m in raw:
+                    if isinstance(m, dict):
+                        fn = str(m.get("filename") or "").strip()
+                        if fn:
+                            meta_by_filename[fn] = {
+                                "episode_id": m.get("episode_id") or None,
+                                "note_date": m.get("note_date") or None,
+                            }
+        except Exception:
+            # Si el JSON viene inválido, continuamos sin metadatos
+            meta_by_filename = {}
+
+    items: List[BatchAckItem] = []  # Lista para almacenar los resultados de cada archivo
     for f in files:
         try:
             # Convierte el contenido del archivo a texto
             content = await f.read()
             text = read_any_to_text(f.filename, content)
+
+            # Metadatos por archivo (obligatorios para comportarse como /extract)
+            meta = meta_by_filename.get(f.filename, {})
+            episode_id = meta.get("episode_id")
+            note_date_raw = meta.get("note_date")
+            note_dt = _parse_iso8601(note_date_raw) if note_date_raw else None
+            note_date_iso = note_dt.isoformat() if note_dt else None
+
+            if not episode_id:
+                raise ValueError(f"Falta 'episode_id' para '{f.filename}'")
+            if not note_date_iso:
+                raise ValueError(f"Falta 'note_date' o formato inválido para '{f.filename}'")
+
             # Llama al servicio de extracción de texto
             res = extract_from_text(
                 text,
@@ -195,6 +226,7 @@ async def extract_batch(
                 systems=systems,
                 restrict_types=restrict_types or None,
             )
+
             note_id = None
             stored = False
             if save and settings.save_results:
@@ -204,6 +236,8 @@ async def extract_batch(
                     payload=text,
                     result=res,
                     model=model,
+                    episode_id=episode_id,
+                    note_date_iso=note_date_iso,
                     filename=f.filename,
                     source_system="api.extract-batch",
                     dedupe_by_hash=True,
@@ -216,9 +250,7 @@ async def extract_batch(
                     filename=f.filename,
                     id=note_id,
                     stored=stored,
-                    entity_count=(
-                        len(res.entities) if hasattr(res, "entities") else None
-                    ),
+                    entity_count=(len(res.entities) if hasattr(res, "entities") else None),
                     url=(f"/notes/{note_id}" if note_id else None),
                 )
             )

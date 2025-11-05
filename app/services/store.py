@@ -66,43 +66,16 @@ def save_result(
     episodes = db.episodes
 
     if dedupe_by_hash:
-        # Intenta insertar la nota solo si no existe otra con el mismo hash en el episodio.
-        upd = episodes.update_one(
-            {
-                "_id": episode_id,
-                "notes": {
-                    "$not": {"$elemMatch": {"content_hash": content_hash}}
-                },  # Verifica que no exista el hash.
-            },
-            {
-                "$setOnInsert": {
-                    "_id": episode_id,
-                    "created_at": created_at,
-                },  # Crea el episodio si no existe.
-                "$push": {"notes": note},  # Agrega la nueva nota al array de notas.
-                "$set": {
-                    "updated_at": created_at
-                },  # Actualiza la fecha de modificación del episodio.
-            },
-            upsert=True,  # Permite insertar el episodio si no existe.
-        )
-
-        # Si se modificó el documento, significa que la nota fue insertada.
-        if upd.modified_count == 1:
-            return note_id
-
-        # Si no se insertó, busca una nota existente con el mismo hash.
+        # 1) Si ya existe una nota con el mismo hash para el episodio, devolver su note_id
         existing = episodes.find_one(
             {"_id": episode_id, "notes.content_hash": content_hash},
-            {"notes.$": 1},  # Proyecta solo la nota coincidente.
+            {"notes.$": 1},
         )
-        if existing and "notes" in existing and existing["notes"]:
-            return existing["notes"][0][
-                "note_id"
-            ]  # Retorna el `note_id` de la nota existente.
+        if existing and existing.get("notes"):
+            return existing["notes"][0]["note_id"]
 
-        # Si no se encuentra una nota existente, realiza un intento de inserción como fallback.
-        fallback = episodes.update_one(
+        # 2) Insertar o hacer push sin usar un filtro de upsert que cause colisión de _id
+        episodes.update_one(
             {"_id": episode_id},
             {
                 "$setOnInsert": {"_id": episode_id, "created_at": created_at},

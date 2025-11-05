@@ -10,7 +10,7 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
-from xml.dom.minidom import Entity
+from app.schemas import Entity
 
 import numpy as np
 import tensorflow as tf
@@ -238,4 +238,4 @@ class LSTMExtractor:
         # Convierte las etiquetas BIO en entidades estructuradas
         entities = self._bio_decode(pred_tags, tokens[:real_T], spans[:real_T], probs)
 
-        return [ent.to_dict() for ent in entities]
+        return [ent.model_dump() for ent in entities]
