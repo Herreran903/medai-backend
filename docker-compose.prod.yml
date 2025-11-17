@@ -1,3 +1,10 @@
+# Docker Compose for local production testing
+# NOTE: Render deployment uses Dockerfile directly, not this compose file
+#
+# Two modes available:
+# 1. With local MongoDB (default)
+# 2. With MongoDB Atlas (uncomment env_file line)
+
 version: "3.8"
 
 services:
@@ -5,20 +12,36 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: medai-api-prod
     ports:
       - "8000:8000"
-    env_file:
-      - .env
+    environment:
+      - PORT=8000
+      - ENVIRONMENT=production
+      # Option 1: Use local MongoDB (default)
+      - MONGODB_URI=mongodb://mongo:27017
+      - MONGODB_DB=medai
+      # Option 2: Use MongoDB Atlas (uncomment next line and comment above MONGODB_URI)
+      # - MONGODB_URI=mongodb+srv://herreranicolas_db_user:uJJ5hDOg5QiiUByq@medai.lqbb01h.mongodb.net/?retryWrites=true&w=majority&appName=Medai
+    # Alternatively, use .env.prod file (uncomment next line)
+    # env_file:
+    #   - .env.prod
     depends_on:
       - mongo
+    restart: unless-stopped
 
   mongo:
     image: mongo:6
+    container_name: medai-mongo-prod
     restart: unless-stopped
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=medai
+    # Comment out this service if using MongoDB Atlas
 
 volumes:
   mongo_data:
+    driver: local

@@ -1,3 +1,4 @@
+# Docker Compose configuration for local development
 version: "3.8"
 
 services:
@@ -5,24 +6,33 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+    container_name: medai-api-dev
     ports:
       - "8000:8000"
     volumes:
+      # Mount app directory for hot-reload
       - ./app:/app/app
     env_file:
       - .env.dev
+    environment:
+      # Override MongoDB URI to use docker-compose service name
+      - MONGODB_URI=mongodb://mongo:27017
     depends_on:
       - mongo
-    command: >
-      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   mongo:
     image: mongo:6
+    container_name: medai-mongo-dev
     restart: unless-stopped
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=medai
 
 volumes:
   mongo_data:
+    driver: local
