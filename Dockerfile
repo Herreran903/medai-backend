@@ -1,10 +1,14 @@
 # Production Dockerfile for Render deployment
 FROM python:3.11-slim
 
-# Install system dependencies required for ML libraries
+# Install system dependencies required for ML libraries + TLS (Atlas)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# (Opcional, pero a veces ayuda a que Python use estos certs explícitamente)
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 WORKDIR /app
 
@@ -16,8 +20,8 @@ RUN pip install --upgrade pip && \
 # Copy application code
 COPY app ./app
 
-# Expose port (Render will set PORT env variable)
-EXPOSE ${PORT:-8000}
+# EXPOSE es solo informativo; Render usa PORT, así que deja un puerto fijo
+EXPOSE 8000
 
 # Run uvicorn with PORT from environment variable
 # No --reload flag for production

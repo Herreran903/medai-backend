@@ -50,8 +50,8 @@ def extract_from_text(
             variant_map = {
                 "beto": os.getenv("TRANSFORMER_BETO_MODEL_ID", "NicolasUnivalle/beto-vm-ner-full"),
                 "beto_peft": os.getenv("TRANSFORMER_BETO_PEFT_MODEL_ID", "NicolasUnivalle/beto-vm-ner-peft"),
-                "roberta": os.getenv("TRANSFORMER_ROBERTA_MODEL_ID", "roberta-base-spanish"),
-                "roberta_peft": os.getenv("TRANSFORMER_ROBERTA_PEFT_MODEL_ID", "NicolasUnivalle/roberta-spanish-ner-peft"),
+                "roberta": os.getenv("TRANSFORMER_ROBERTA_MODEL_ID", "NicolasUnivalle/roberta-vm-ner-full"),
+                "roberta_peft": os.getenv("TRANSFORMER_ROBERTA_PEFT_MODEL_ID", "NicolasUnivalle/roberta-vm-ner-peft"),
             }
             model_id = variant_map.get(model_variant, model_variant)
             extractor = TransformerExtractor(model_id=model_id)
