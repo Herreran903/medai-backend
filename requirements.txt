@@ -1,13 +1,33 @@
+# --- web/API ---
 fastapi
 uvicorn[standard]
 pydantic==2.*
 python-multipart
 pymongo
 pydantic-settings
-pypdf
 docx2txt
-# modelos
+pymupdf
+
+# --- ML stack ---
 torch
 transformers
 accelerate
 sentencepiece
+peft>=0.10.0
+safetensors>=0.4.3
+huggingface_hub>=0.24
+rapidfuzz>=3.0.0
+deep-translator>=1.11.4
+sentence-transformers>=2.6.0
+
+# --- LLM APIs ---
+anthropic>=0.39.0
+openai>=1.0.0
+
+# --- TensorFlow según arquitectura ---
+tensorflow==2.16.2 ; platform_system == "Linux" and platform_machine == "x86_64"
+tensorflow-aarch64==2.16.1 ; platform_system == "Linux" and platform_machine == "aarch64"
+tensorflow==2.16.2 ; sys_platform == "darwin"
+
+# --- NumPy compatible con TF 2.16 ---
+numpy==1.26.4
