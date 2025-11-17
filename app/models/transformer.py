@@ -1,8 +1,7 @@
 # transformer_extractor.py
-# Este archivo implementa una clase para extracción de entidades nombradas (NER)
-# basada en modelos Transformers con soporte para PEFT/LoRA. Incluye tokenización
-# con ventanas deslizantes, predicción de etiquetas por token, agregación por palabra
-# y colapso de spans solapados.
+# Este archivo implementa extractores de entidades nombradas (NER) basados en modelos Transformers
+# con soporte para PEFT/LoRA. Sigue el patrón de diseño similar a LLM con clases específicas
+# por variante (BETO, RoBERTa) y una clase facade principal.
 
 from __future__ import annotations
 
@@ -29,9 +28,13 @@ if not logger.handlers:
 logger.setLevel(logging.WARNING)
 
 
-class TransformerExtractor:
+# ============================================================================
+# Base Transformer Extractor Class
+# ============================================================================
+
+class BaseTransformerExtractor:
     """
-    Clase para extracción de entidades nombradas (NER) usando Transformers.
+    Clase base para extracción de entidades nombradas (NER) usando Transformers.
     Soporta modelos con PEFT/LoRA y realiza predicciones basadas en token classification.
 
     Flujo principal:
@@ -44,20 +47,16 @@ class TransformerExtractor:
 
     def __init__(
         self,
-        model_id: Optional[str] = None,
-        base_model_id: Optional[str] = None,
+        model_id: str,
+        base_model_id: str,
         *,
         max_len: int = 512,
         stride: int = 64,
         device: Optional[str] = None,
     ) -> None:
         # Inicializa los identificadores de modelo (adapter y base)
-        self.model_id: str = model_id or os.getenv(
-            "HF_MODEL_ID", "NicolasUnivalle/beto_vm_peft"
-        )
-        self.base_model_id: str = base_model_id or os.getenv(
-            "HF_BASE_MODEL_ID", "dccuchile/bert-base-spanish-wwm-cased"
-        )
+        self.model_id: str = model_id
+        self.base_model_id: str = base_model_id
         self.hf_token: Optional[str] = os.getenv("HF_TOKEN")
 
         # Configuración de tokenización con ventanas deslizantes
@@ -376,3 +375,251 @@ class TransformerExtractor:
             "device": str(self.device),
             "labels": sorted(set(self.id2label.values())),
         }
+
+
+# ============================================================================
+# BETO Transformer Extractor
+# ============================================================================
+
+class BETOTransformerExtractor(BaseTransformerExtractor):
+    """
+    Extractor específico para modelos BETO (BERT español).
+    Usa configuración predeterminada para BETO con soporte para variantes PEFT.
+    """
+    
+    def __init__(
+        self,
+        model_id: Optional[str] = None,
+        base_model_id: Optional[str] = None,
+        *,
+        max_len: int = 512,
+        stride: int = 64,
+        device: Optional[str] = None,
+    ) -> None:
+        """
+        Inicializa el extractor BETO.
+        
+        Args:
+            model_id: ID del modelo BETO (por defecto lee de env o usa NicolasUnivalle/beto-vm-ner-full)
+            base_model_id: ID del modelo base BETO (por defecto dccuchile/bert-base-spanish-wwm-cased)
+            max_len: Longitud máxima de secuencia
+            stride: Stride para ventanas deslizantes
+            device: Dispositivo de ejecución (cuda/cpu)
+        """
+        model_id = model_id or os.getenv(
+            "HF_MODEL_ID", "NicolasUnivalle/beto-vm-ner-full"
+        )
+        base_model_id = base_model_id or os.getenv(
+            "HF_BASE_MODEL_ID", "dccuchile/bert-base-spanish-wwm-cased"
+        )
+        
+        super().__init__(
+            model_id=model_id,
+            base_model_id=base_model_id,
+            max_len=max_len,
+            stride=stride,
+            device=device,
+        )
+        
+        logger.info(f"BETO Transformer Extractor inicializado: {model_id}")
+    
+    def meta(self) -> Dict[str, Any]:
+        """Retorna metadatos del extractor BETO."""
+        base_meta = super().meta()
+        base_meta["variant"] = "beto"
+        base_meta["extractor"] = "beto_transformer"
+        return base_meta
+
+
+# ============================================================================
+# RoBERTa Transformer Extractor
+# ============================================================================
+
+class RobertaTransformerExtractor(BaseTransformerExtractor):
+    """
+    Extractor específico para modelos RoBERTa español.
+    Usa configuración predeterminada para RoBERTa con soporte para variantes PEFT.
+    
+    RoBERTa (Robustly Optimized BERT Approach) es una variante mejorada de BERT
+    que elimina el objetivo de predicción de siguiente oración (NSP) y usa
+    tokenización a nivel de byte (BPE) en lugar de WordPiece.
+    """
+    
+    def __init__(
+        self,
+        model_id: Optional[str] = None,
+        base_model_id: Optional[str] = None,
+        *,
+        max_len: int = 512,
+        stride: int = 64,
+        device: Optional[str] = None,
+    ) -> None:
+        """
+        Inicializa el extractor RoBERTa.
+        
+        Args:
+            model_id: ID del modelo RoBERTa (por defecto lee de env o usa roberta-base-spanish)
+            base_model_id: ID del modelo base RoBERTa (por defecto PlanTL-GOB-ES/roberta-base-bne)
+            max_len: Longitud máxima de secuencia
+            stride: Stride para ventanas deslizantes
+            device: Dispositivo de ejecución (cuda/cpu)
+        """
+        # Lee configuración de variables de entorno o usa valores por defecto
+        model_id = model_id or os.getenv(
+            "TRANSFORMER_ROBERTA_MODEL_ID", "PlanTL-GOB-ES/roberta-base-bne"
+        )
+        base_model_id = base_model_id or os.getenv(
+            "TRANSFORMER_ROBERTA_BASE_MODEL_ID", "PlanTL-GOB-ES/roberta-base-bne"
+        )
+        
+        # Inicializa usando la clase base con la configuración de RoBERTa
+        super().__init__(
+            model_id=model_id,
+            base_model_id=base_model_id,
+            max_len=max_len,
+            stride=stride,
+            device=device,
+        )
+        
+        logger.info(f"RoBERTa Transformer Extractor inicializado: {model_id}")
+    
+    def predict(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Predice entidades usando RoBERTa.
+        
+        RoBERTa usa tokenización BPE (Byte-Pair Encoding) que puede manejar
+        mejor palabras fuera de vocabulario comparado con WordPiece de BERT.
+        La implementación base maneja esto correctamente.
+        
+        Args:
+            text: Texto del cual extraer entidades
+            
+        Returns:
+            Lista de entidades extraídas con formato:
+            [{"type": str, "text": str, "start": int, "end": int, "score": float, "code": str}]
+        """
+        # RoBERTa usa la misma arquitectura de predicción que BERT/BETO
+        # La diferencia principal está en el preentrenamiento y tokenización
+        return super().predict(text)
+    
+    def meta(self) -> Dict[str, Any]:
+        """Retorna metadatos del extractor RoBERTa."""
+        base_meta = super().meta()
+        base_meta["variant"] = "roberta"
+        base_meta["extractor"] = "roberta_transformer"
+        base_meta["tokenization"] = "bpe"  # RoBERTa usa Byte-Pair Encoding
+        base_meta["architecture"] = "roberta"
+        return base_meta
+
+
+# ============================================================================
+# Main TransformerExtractor Class (Facade)
+# ============================================================================
+
+class TransformerExtractor:
+    """
+    Clase principal que actúa como facade para diferentes extractores Transformer.
+    Selecciona automáticamente el extractor apropiado según el model_id proporcionado.
+    
+    Similar al patrón usado en LLMExtractor, permite cambiar entre variantes
+    (BETO, RoBERTa, etc.) de forma transparente.
+    """
+    
+    def __init__(
+        self,
+        model_id: Optional[str] = None,
+        base_model_id: Optional[str] = None,
+        *,
+        max_len: int = 512,
+        stride: int = 64,
+        device: Optional[str] = None,
+    ) -> None:
+        """
+        Inicializa el extractor Transformer según el model_id.
+        
+        Args:
+            model_id: ID del modelo a usar (determina la variante)
+            base_model_id: ID del modelo base
+            max_len: Longitud máxima de secuencia
+            stride: Stride para ventanas deslizantes
+            device: Dispositivo de ejecución
+        """
+        self.model_id = model_id or os.getenv(
+            "HF_MODEL_ID", "NicolasUnivalle/beto-vm-ner-full"
+        )
+        
+        # Determina la variante según el model_id
+        self.variant = self._detect_variant(self.model_id)
+        
+        # Inicializa el extractor apropiado según la variante
+        if self.variant == "beto":
+            self.extractor = BETOTransformerExtractor(
+                model_id=model_id,
+                base_model_id=base_model_id,
+                max_len=max_len,
+                stride=stride,
+                device=device,
+            )
+        elif self.variant == "roberta":
+            self.extractor = RobertaTransformerExtractor(
+                model_id=model_id,
+                base_model_id=base_model_id,
+                max_len=max_len,
+                stride=stride,
+                device=device,
+            )
+        else:
+            # Por defecto usa BETO
+            logger.warning(f"Variante desconocida para {model_id}. Usando BETO por defecto.")
+            self.extractor = BETOTransformerExtractor(
+                model_id=model_id,
+                base_model_id=base_model_id,
+                max_len=max_len,
+                stride=stride,
+                device=device,
+            )
+        
+        logger.info(f"TransformerExtractor inicializado con variante: {self.variant}")
+    
+    def _detect_variant(self, model_id: str) -> str:
+        """
+        Detecta la variante del modelo según el model_id.
+        
+        Args:
+            model_id: ID del modelo
+            
+        Returns:
+            Variante detectada ("beto", "roberta", etc.)
+        """
+        model_id_lower = model_id.lower()
+        
+        if "roberta" in model_id_lower:
+            return "roberta"
+        elif "beto" in model_id_lower or "bert" in model_id_lower:
+            return "beto"
+        else:
+            # Por defecto asume BETO
+            return "beto"
+    
+    def predict(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Extrae entidades del texto usando el extractor apropiado.
+        
+        Args:
+            text: Texto del cual extraer entidades
+            
+        Returns:
+            Lista de entidades extraídas
+        """
+        return self.extractor.predict(text)
+    
+    def meta(self) -> Dict[str, Any]:
+        """
+        Retorna metadatos del extractor actual.
+        
+        Returns:
+            Diccionario con información del extractor
+        """
+        base_meta = self.extractor.meta()
+        base_meta["facade_variant"] = self.variant
+        return base_meta

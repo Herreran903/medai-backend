@@ -55,6 +55,36 @@ class Settings(BaseSettings):
     # API Key opcional para interactuar con UMLS (Unified Medical Language System).
     umls_apikey: Optional[str] = Field(default=None, env="UMLS_APIKEY")
 
+    # API Key para Anthropic Claude (LLM extractor)
+    anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
+
+    # API Key para OpenAI GPT (LLM extractor alternativo)
+    openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
+
+    # Configuración de modelos Transformer - BETO
+    transformer_beto_model_id: Optional[str] = Field(
+        default="NicolasUnivalle/beto-vm-ner-full",
+        env="TRANSFORMER_BETO_MODEL_ID"
+    )
+    transformer_beto_peft_model_id: Optional[str] = Field(
+        default="NicolasUnivalle/beto-vm-ner-peft",
+        env="TRANSFORMER_BETO_PEFT_MODEL_ID"
+    )
+
+    # Configuración de modelos Transformer - RoBERTa
+    transformer_roberta_model_id: Optional[str] = Field(
+        default="PlanTL-GOB-ES/roberta-base-bne",
+        env="TRANSFORMER_ROBERTA_MODEL_ID"
+    )
+    transformer_roberta_base_model_id: Optional[str] = Field(
+        default="PlanTL-GOB-ES/roberta-base-bne",
+        env="TRANSFORMER_ROBERTA_BASE_MODEL_ID"
+    )
+    transformer_roberta_peft_model_id: Optional[str] = Field(
+        default="NicolasUnivalle/roberta-spanish-ner-peft",
+        env="TRANSFORMER_ROBERTA_PEFT_MODEL_ID"
+    )
+
     # Configuración adicional para Pydantic Settings.
     model_config = SettingsConfigDict(
         env_file=".env.dev",  # Archivo de entorno predeterminado.

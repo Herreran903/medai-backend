@@ -76,7 +76,8 @@ def _parse_csv(v: Optional[str]) -> List[str]:
 async def extract(
     text: Optional[str] = Form(None),  # Texto proporcionado directamente
     file: Optional[UploadFile] = File(None),  # Archivo cargado por el usuario
-    model: str = Form(...),  # Modelo de extracción a utilizar
+    model: str = Form(...),  # Modelo de extracción a utilizar (lstm, transformer, llm)
+    model_variant: Optional[str] = Form(None),  # Variante del modelo (claude/gpt/local para llm, beto/roberta para transformer)
     episode_id: Optional[str] = Form(None),  # ID del episodio asociado
     note_date: Optional[str] = Form(None),  # Fecha de la nota en formato ISO 8601
     save: Optional[bool] = Form(True),  # Indica si se debe guardar el resultado
@@ -112,6 +113,7 @@ async def extract(
     res = extract_from_text(
         text or "",
         model=model or settings.default_model,
+        model_variant=model_variant,  # Pasa la variante del modelo
         normalize=bool(normalize),
         systems=systems,
         restrict_types=restrict_types or None,
@@ -165,6 +167,7 @@ async def extract(
 async def extract_batch(
     files: List[UploadFile] = File(...),  # Lista de archivos cargados
     model: str = Form(...),  # Modelo de extracción a utilizar
+    model_variant: Optional[str] = Form(None),  # Variante del modelo
     save: Optional[bool] = Form(True),  # Indica si se deben guardar los resultados
     normalize: Optional[bool] = Form(False),  # Normalización de entidades
     systems_csv: Optional[str] = Form(None),  # Sistemas específicos en formato CSV
@@ -222,6 +225,7 @@ async def extract_batch(
             res = extract_from_text(
                 text,
                 model=model or settings.default_model,
+                model_variant=model_variant,
                 normalize=bool(normalize),
                 systems=systems,
                 restrict_types=restrict_types or None,

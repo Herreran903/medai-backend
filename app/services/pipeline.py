@@ -20,6 +20,7 @@ def extract_from_text(
     text: str,
     model: str,
     *,
+    model_variant: str | None = None,
     normalize: bool = False,
     systems: List[str] | None = None,
     restrict_types: List[str] | None = None,
@@ -34,6 +35,26 @@ def extract_from_text(
     if callable(extractor) and not hasattr(extractor, "predict"):
         extractor = extractor()
         MODEL_REGISTRY[model] = extractor
+    
+    # Si se especifica una variante del modelo, reinicializa el extractor con esa variante
+    if model_variant:
+        if model == "llm":
+            # Para LLM: claude, gpt, local
+            from app.models.llm import LLMExtractor
+            extractor = LLMExtractor(provider=model_variant)
+        elif model == "transformer":
+            # Para Transformer: permite especificar model_id diferente (beto, roberta, etc.)
+            from app.models.transformer import TransformerExtractor
+            import os
+            # Mapeo de variantes a model_ids - lee primero de variables de entorno
+            variant_map = {
+                "beto": os.getenv("TRANSFORMER_BETO_MODEL_ID", "NicolasUnivalle/beto-vm-ner-full"),
+                "beto_peft": os.getenv("TRANSFORMER_BETO_PEFT_MODEL_ID", "NicolasUnivalle/beto-vm-ner-peft"),
+                "roberta": os.getenv("TRANSFORMER_ROBERTA_MODEL_ID", "roberta-base-spanish"),
+                "roberta_peft": os.getenv("TRANSFORMER_ROBERTA_PEFT_MODEL_ID", "NicolasUnivalle/roberta-spanish-ner-peft"),
+            }
+            model_id = variant_map.get(model_variant, model_variant)
+            extractor = TransformerExtractor(model_id=model_id)
 
     # Intenta predecir entidades desde el texto usando el extractor.
     # Maneja errores específicos y generales para asegurar robustez.
