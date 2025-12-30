@@ -30,7 +30,6 @@ from app.schemas import (
     ExtractAck,
     ExtractResponse,
 )
-from app.services.pipeline import extract_from_text
 from app.services.store import (
     save_result,  # Función para guardar resultados en la base de datos
 )
@@ -38,6 +37,12 @@ from app.services.text_utils import read_any_to_text  # Convierte archivos a tex
 
 # Se define un enrutador para los endpoints de extracción
 router = APIRouter()
+
+
+def _extract_from_text(*args, **kwargs):
+    from app.services.pipeline import extract_from_text
+
+    return extract_from_text(*args, **kwargs)
 
 
 # Función auxiliar para analizar fechas en formato ISO 8601
@@ -112,7 +117,7 @@ async def extract(
     note_date_iso = note_dt.isoformat() if note_dt else None
 
     # Llama al servicio de extracción de texto con los parámetros proporcionados
-    res = extract_from_text(
+    res = _extract_from_text(
         text or "",
         model=model or settings.default_model,
         model_variant=model_variant,  # Pasa la variante del modelo
@@ -228,7 +233,7 @@ async def extract_batch(
                 )
 
             # Llama al servicio de extracción de texto
-            res = extract_from_text(
+            res = _extract_from_text(
                 text,
                 model=model or settings.default_model,
                 model_variant=model_variant,
