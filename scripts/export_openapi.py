@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from pathlib import Path
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo_root))
+
+    os.environ["DOCS_BUILD"] = "1"
 
     from app.main import app
 
