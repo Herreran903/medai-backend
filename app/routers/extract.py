@@ -3,10 +3,10 @@
 # de datos y manejar lotes de archivos. Utiliza FastAPI para la creación de rutas y MongoDB
 # como base de datos.
 
-from datetime import datetime
-from typing import List, Optional, Dict
-
 import json
+from datetime import datetime
+from typing import Dict, List, Optional
+
 from bson import ObjectId
 from fastapi import (
     APIRouter,
@@ -77,7 +77,9 @@ async def extract(
     text: Optional[str] = Form(None),  # Texto proporcionado directamente
     file: Optional[UploadFile] = File(None),  # Archivo cargado por el usuario
     model: str = Form(...),  # Modelo de extracción a utilizar (lstm, transformer, llm)
-    model_variant: Optional[str] = Form(None),  # Variante del modelo (claude/gpt/local para llm, beto/roberta para transformer)
+    model_variant: Optional[str] = Form(
+        None
+    ),  # Variante del modelo (claude/gpt/local para llm, beto/roberta para transformer)
     episode_id: Optional[str] = Form(None),  # ID del episodio asociado
     note_date: Optional[str] = Form(None),  # Fecha de la nota en formato ISO 8601
     save: Optional[bool] = Form(True),  # Indica si se debe guardar el resultado
@@ -202,7 +204,9 @@ async def extract_batch(
             # Si el JSON viene inválido, continuamos sin metadatos
             meta_by_filename = {}
 
-    items: List[BatchAckItem] = []  # Lista para almacenar los resultados de cada archivo
+    items: List[BatchAckItem] = (
+        []
+    )  # Lista para almacenar los resultados de cada archivo
     for f in files:
         try:
             # Convierte el contenido del archivo a texto
@@ -219,7 +223,9 @@ async def extract_batch(
             if not episode_id:
                 raise ValueError(f"Falta 'episode_id' para '{f.filename}'")
             if not note_date_iso:
-                raise ValueError(f"Falta 'note_date' o formato inválido para '{f.filename}'")
+                raise ValueError(
+                    f"Falta 'note_date' o formato inválido para '{f.filename}'"
+                )
 
             # Llama al servicio de extracción de texto
             res = extract_from_text(
@@ -254,7 +260,9 @@ async def extract_batch(
                     filename=f.filename,
                     id=note_id,
                     stored=stored,
-                    entity_count=(len(res.entities) if hasattr(res, "entities") else None),
+                    entity_count=(
+                        len(res.entities) if hasattr(res, "entities") else None
+                    ),
                     url=(f"/notes/{note_id}" if note_id else None),
                 )
             )

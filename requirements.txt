@@ -28,6 +28,7 @@ openai>=1.0.0
 tensorflow==2.16.2 ; platform_system == "Linux" and platform_machine == "x86_64"
 tensorflow-aarch64==2.16.1 ; platform_system == "Linux" and platform_machine == "aarch64"
 tensorflow==2.16.2 ; sys_platform == "darwin"
+tf-keras==2.16.0
 
 # --- NumPy compatible con TF 2.16 ---
 numpy==1.26.4
