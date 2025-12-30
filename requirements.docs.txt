@@ -3,3 +3,4 @@ pydantic
 pydantic-settings
 python-multipart
 pymongo
+docx2txt
