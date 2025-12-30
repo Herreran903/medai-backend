@@ -10,10 +10,11 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
-from app.schemas import Entity
 
 import numpy as np
 import tensorflow as tf
+
+from app.schemas import Entity
 
 # Configuración del logger para registrar mensajes de advertencia e información
 logger = logging.getLogger(__name__)

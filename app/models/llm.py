@@ -28,24 +28,37 @@ logger.setLevel(logging.INFO)
 # JSON Schema Definitions for Clinical Entities
 # ============================================================================
 
+
 class ClinicalEntity(BaseModel):
     """
     Representa una entidad clínica extraída del texto.
     Compatible con el formato esperado por el pipeline LSTM/Transformer.
     """
-    label: str = Field(description="Tipo de entidad clínica (ej: FiO2, PEEP, temperatura)")
+
+    label: str = Field(
+        description="Tipo de entidad clínica (ej: FiO2, PEEP, temperatura)"
+    )
     value_raw: str = Field(description="Valor extraído tal como aparece en el texto")
-    value_norm: str = Field(default="", description="Valor normalizado (número + unidad estándar)")
+    value_norm: str = Field(
+        default="", description="Valor normalizado (número + unidad estándar)"
+    )
     units: str = Field(default="", description="Unidades de medida normalizadas")
-    confidence: float = Field(default=0.95, ge=0.0, le=1.0, description="Confianza de la extracción (0-1)")
-    category: str = Field(description="Categoría de la entidad (ej: ventilacion, signos_vitales)")
+    confidence: float = Field(
+        default=0.95, ge=0.0, le=1.0, description="Confianza de la extracción (0-1)"
+    )
+    category: str = Field(
+        description="Categoría de la entidad (ej: ventilacion, signos_vitales)"
+    )
 
 
 class ClinicalEntitiesResponse(BaseModel):
     """
     Respuesta estructurada que contiene todas las entidades clínicas extraídas.
     """
-    entities: List[ClinicalEntity] = Field(default_factory=list, description="Lista de entidades clínicas extraídas")
+
+    entities: List[ClinicalEntity] = Field(
+        default_factory=list, description="Lista de entidades clínicas extraídas"
+    )
 
 
 # ============================================================================
@@ -53,25 +66,12 @@ class ClinicalEntitiesResponse(BaseModel):
 # ============================================================================
 
 ENTITY_CATEGORIES = {
-    "ventilacion": [
-        "MODO", "FIO2", "PEEP", "FR",
-        "VT", "FLUJO", "I_E", "SENS"
-    ],
-    "respuesta_ventilacion": [
-        "SAO2", "PP", "PMES", "PM"
-    ],
-    "antropometricos": [
-        "EDAD", "PESO", "TALLA"
-    ],
-    "signos_vitales": [
-        "TEMP", "PA", "PAS", "PAD", "PAM", "FC", "GLICEMIA", "POSTURA"
-    ],
-    "observaciones": [
-        "DX"
-    ],
-    "gases_arteriales": [
-        "PH", "PACO2", "HCO3", "BE", "PAO2", "PAFI"
-    ]
+    "ventilacion": ["MODO", "FIO2", "PEEP", "FR", "VT", "FLUJO", "I_E", "SENS"],
+    "respuesta_ventilacion": ["SAO2", "PP", "PMES", "PM"],
+    "antropometricos": ["EDAD", "PESO", "TALLA"],
+    "signos_vitales": ["TEMP", "PA", "PAS", "PAD", "PAM", "FC", "GLICEMIA", "POSTURA"],
+    "observaciones": ["DX"],
+    "gases_arteriales": ["PH", "PACO2", "HCO3", "BE", "PAO2", "PAFI"],
 }
 
 # Mapeo inverso: label -> category
@@ -150,16 +150,19 @@ Extrae las entidades en formato JSON estructurado."""
 # LLM Extractors
 # ============================================================================
 
+
 class ClaudeLLMExtractor:
     """
     Extractor de entidades clínicas usando Claude Sonnet 4.5 con Structured Outputs.
     Garantiza respuestas en formato JSON válido con schema validation.
     """
-    
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-20250514"):
+
+    def __init__(
+        self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-20250514"
+    ):
         """
         Inicializa el extractor de Claude.
-        
+
         Args:
             api_key: API key de Anthropic (si no se proporciona, se lee de ANTHROPIC_API_KEY)
             model: Modelo de Claude a usar (por defecto claude-sonnet-4-20250514)
@@ -167,27 +170,34 @@ class ClaudeLLMExtractor:
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.model = model
         self.client = None
-        
+
         if self.api_key:
             try:
                 import anthropic
+
                 self.client = anthropic.Anthropic(api_key=self.api_key)
-                logger.info(f"Claude LLM Extractor inicializado con modelo: {self.model}")
+                logger.info(
+                    f"Claude LLM Extractor inicializado con modelo: {self.model}"
+                )
             except ImportError:
-                logger.warning("anthropic package no instalado. Instala con: pip install anthropic")
+                logger.warning(
+                    "anthropic package no instalado. Instala con: pip install anthropic"
+                )
             except Exception as e:
                 logger.error(f"Error inicializando cliente de Anthropic: {e}")
         else:
-            logger.warning("ANTHROPIC_API_KEY no configurada. El extractor no funcionará.")
-    
+            logger.warning(
+                "ANTHROPIC_API_KEY no configurada. El extractor no funcionará."
+            )
+
     def _calculate_offsets(self, text: str, entity_text: str) -> tuple[int, int]:
         """
         Calcula los offsets (start, end) de una entidad en el texto original.
-        
+
         Args:
             text: Texto completo
             entity_text: Texto de la entidad a buscar
-            
+
         Returns:
             Tupla (start, end) con las posiciones
         """
@@ -205,16 +215,16 @@ class ClaudeLLMExtractor:
                 return (-1, -1)
         else:
             end = start + len(entity_text)
-        
+
         return (start, end)
-    
+
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
         Extrae entidades clínicas del texto usando Claude con structured outputs.
-        
+
         Args:
             text: Texto médico del cual extraer entidades
-            
+
         Returns:
             Lista de diccionarios con formato compatible con pipeline LSTM/Transformer:
             [{"type": str, "text": str, "start": int, "end": int, "score": float, "code": str}]
@@ -222,10 +232,10 @@ class ClaudeLLMExtractor:
         if not self.client:
             logger.error("Cliente de Claude no inicializado. Retornando lista vacía.")
             return []
-        
+
         if not text or not text.strip():
             return []
-        
+
         try:
             # Construye el prompt con el texto
             prompt = EXTRACTION_PROMPT.format(text=text)
@@ -237,8 +247,7 @@ class ClaudeLLMExtractor:
             try:
                 system_msg = (
                     "Devuelve exclusivamente un JSON válido que cumpla estrictamente con este JSON Schema de Pydantic. "
-                    "No incluyas NINGÚN texto fuera del JSON:\n"
-                    + json.dumps(schema)
+                    "No incluyas NINGÚN texto fuera del JSON:\n" + json.dumps(schema)
                 )
                 response = self.client.messages.create(
                     model=self.model,
@@ -254,10 +263,13 @@ class ClaudeLLMExtractor:
 
             # Intenta validar directamente contra el schema; si falla, intenta recuperar el JSON del texto
             try:
-                entities_response = ClinicalEntitiesResponse.model_validate_json(content)
+                entities_response = ClinicalEntitiesResponse.model_validate_json(
+                    content
+                )
             except Exception:
                 try:
                     import re as _re
+
                     # Extrae el primer objeto o arreglo JSON
                     m = _re.search(r"\{.*\}|\[.*\]", content, _re.DOTALL)
                     if not m:
@@ -265,9 +277,13 @@ class ClaudeLLMExtractor:
                     raw_json = m.group(0)
                     if raw_json.lstrip().startswith("["):
                         wrapped = json.dumps({"entities": json.loads(raw_json)})
-                        entities_response = ClinicalEntitiesResponse.model_validate_json(wrapped)
+                        entities_response = (
+                            ClinicalEntitiesResponse.model_validate_json(wrapped)
+                        )
                     else:
-                        entities_response = ClinicalEntitiesResponse.model_validate_json(raw_json)
+                        entities_response = (
+                            ClinicalEntitiesResponse.model_validate_json(raw_json)
+                        )
                 except Exception as e2:
                     logger.error(f"Error validando JSON de Claude: {e2}")
                     return []
@@ -295,7 +311,7 @@ class ClaudeLLMExtractor:
         except Exception as e:
             logger.error(f"Error en extracción con Claude: {e}")
             return []
-    
+
     def meta(self) -> Dict[str, Any]:
         """Retorna metadatos del extractor."""
         return {
@@ -304,7 +320,7 @@ class ClaudeLLMExtractor:
             "provider": "anthropic",
             "structured_outputs": False,  # SDK no soporta response_format, usa system prompt
             "categories": list(ENTITY_CATEGORIES.keys()),
-            "total_labels": sum(len(labels) for labels in ENTITY_CATEGORIES.values())
+            "total_labels": sum(len(labels) for labels in ENTITY_CATEGORIES.values()),
         }
 
 
@@ -313,11 +329,11 @@ class GPTLLMExtractor:
     Extractor de entidades clínicas usando OpenAI GPT con Structured Outputs.
     Garantiza respuestas en formato JSON válido con schema validation.
     """
-    
+
     def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-2024-08-06"):
         """
         Inicializa el extractor de GPT.
-        
+
         Args:
             api_key: API key de OpenAI (si no se proporciona, se lee de OPENAI_API_KEY)
             model: Modelo de GPT a usar (por defecto gpt-4o-2024-08-06)
@@ -325,27 +341,30 @@ class GPTLLMExtractor:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.model = model
         self.client = None
-        
+
         if self.api_key:
             try:
                 from openai import OpenAI
+
                 self.client = OpenAI(api_key=self.api_key)
                 logger.info(f"GPT LLM Extractor inicializado con modelo: {self.model}")
             except ImportError:
-                logger.warning("openai package no instalado. Instala con: pip install openai")
+                logger.warning(
+                    "openai package no instalado. Instala con: pip install openai"
+                )
             except Exception as e:
                 logger.error(f"Error inicializando cliente de OpenAI: {e}")
         else:
             logger.warning("OPENAI_API_KEY no configurada. El extractor no funcionará.")
-    
+
     def _calculate_offsets(self, text: str, entity_text: str) -> tuple[int, int]:
         """
         Calcula los offsets (start, end) de una entidad en el texto original.
-        
+
         Args:
             text: Texto completo
             entity_text: Texto de la entidad a buscar
-            
+
         Returns:
             Tupla (start, end) con las posiciones
         """
@@ -363,16 +382,16 @@ class GPTLLMExtractor:
                 return (-1, -1)
         else:
             end = start + len(entity_text)
-        
+
         return (start, end)
-    
+
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
         Extrae entidades clínicas del texto usando GPT con structured outputs.
-        
+
         Args:
             text: Texto médico del cual extraer entidades
-            
+
         Returns:
             Lista de diccionarios con formato compatible con pipeline LSTM/Transformer:
             [{"type": str, "text": str, "start": int, "end": int, "score": float, "code": str}]
@@ -380,18 +399,18 @@ class GPTLLMExtractor:
         if not self.client:
             logger.error("Cliente de OpenAI no inicializado. Retornando lista vacía.")
             return []
-        
+
         if not text or not text.strip():
             return []
-        
+
         try:
             # Construye el prompt con el texto
             prompt = EXTRACTION_PROMPT.format(text=text)
             schema = ClinicalEntitiesResponse.model_json_schema()
-            
+
             # Prepara el schema para OpenAI (requiere additionalProperties: false y required completo)
             openai_schema = schema.copy()
-            
+
             def fix_schema_for_openai(obj):
                 """Ajusta el schema para cumplir con OpenAI strict mode"""
                 if isinstance(obj, dict):
@@ -415,9 +434,9 @@ class GPTLLMExtractor:
                 elif isinstance(obj, list):
                     for item in obj:
                         fix_schema_for_openai(item)
-            
+
             fix_schema_for_openai(openai_schema)
-            
+
             # Usa structured outputs de OpenAI
             try:
                 response = self.client.chat.completions.create(
@@ -425,23 +444,20 @@ class GPTLLMExtractor:
                     messages=[
                         {
                             "role": "system",
-                            "content": "Eres un experto en extracción de entidades clínicas. Devuelve SOLO JSON válido."
+                            "content": "Eres un experto en extracción de entidades clínicas. Devuelve SOLO JSON válido.",
                         },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
+                        {"role": "user", "content": prompt},
                     ],
                     response_format={
                         "type": "json_schema",
                         "json_schema": {
                             "name": "clinical_entities_extraction",
                             "strict": True,
-                            "schema": openai_schema
-                        }
+                            "schema": openai_schema,
+                        },
                     },
                     temperature=0.0,
-                    max_tokens=4096
+                    max_tokens=4096,
                 )
                 content = response.choices[0].message.content
             except Exception as e:
@@ -452,21 +468,20 @@ class GPTLLMExtractor:
                     messages=[
                         {
                             "role": "system",
-                            "content": f"Eres un experto en extracción de entidades clínicas. Devuelve SOLO JSON válido que cumpla con este schema:\n{json.dumps(schema)}"
+                            "content": f"Eres un experto en extracción de entidades clínicas. Devuelve SOLO JSON válido que cumpla con este schema:\n{json.dumps(schema)}",
                         },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
+                        {"role": "user", "content": prompt},
                     ],
                     temperature=0.0,
-                    max_tokens=4096
+                    max_tokens=4096,
                 )
                 content = response.choices[0].message.content
-            
+
             # Intenta validar directamente contra el schema
             try:
-                entities_response = ClinicalEntitiesResponse.model_validate_json(content)
+                entities_response = ClinicalEntitiesResponse.model_validate_json(
+                    content
+                )
             except Exception:
                 try:
                     # Extrae el primer objeto o arreglo JSON
@@ -476,19 +491,23 @@ class GPTLLMExtractor:
                     raw_json = m.group(0)
                     if raw_json.lstrip().startswith("["):
                         wrapped = json.dumps({"entities": json.loads(raw_json)})
-                        entities_response = ClinicalEntitiesResponse.model_validate_json(wrapped)
+                        entities_response = (
+                            ClinicalEntitiesResponse.model_validate_json(wrapped)
+                        )
                     else:
-                        entities_response = ClinicalEntitiesResponse.model_validate_json(raw_json)
+                        entities_response = (
+                            ClinicalEntitiesResponse.model_validate_json(raw_json)
+                        )
                 except Exception as e2:
                     logger.error(f"Error validando JSON de GPT: {e2}")
                     return []
-            
+
             # Convierte al formato esperado por el pipeline
             result = []
             for entity in entities_response.entities:
                 # Calcula offsets en el texto original
                 start, end = self._calculate_offsets(text, entity.value_raw)
-                
+
                 # Construye el diccionario en formato compatible
                 entity_dict = {
                     "type": entity.label,
@@ -499,14 +518,14 @@ class GPTLLMExtractor:
                     "code": entity.value_norm,  # Usa value_norm como código
                 }
                 result.append(entity_dict)
-            
+
             logger.info(f"Extraídas {len(result)} entidades clínicas con GPT")
             return result
-        
+
         except Exception as e:
             logger.error(f"Error en extracción con GPT: {e}")
             return []
-    
+
     def meta(self) -> Dict[str, Any]:
         """Retorna metadatos del extractor."""
         return {
@@ -515,7 +534,7 @@ class GPTLLMExtractor:
             "provider": "openai",
             "structured_outputs": True,
             "categories": list(ENTITY_CATEGORIES.keys()),
-            "total_labels": sum(len(labels) for labels in ENTITY_CATEGORIES.values())
+            "total_labels": sum(len(labels) for labels in ENTITY_CATEGORIES.values()),
         }
 
 
@@ -524,34 +543,36 @@ class LocalLLMExtractor:
     Stub para extractor usando LLM local (ej: Llama, Mistral via Ollama).
     Implementación futura para modelos locales con structured outputs.
     """
-    
-    def __init__(self, model: str = "llama3.1:8b", base_url: str = "http://localhost:11434"):
+
+    def __init__(
+        self, model: str = "llama3.1:8b", base_url: str = "http://localhost:11434"
+    ):
         """
         Inicializa el extractor de LLM local (stub).
-        
+
         Args:
             model: Nombre del modelo local
             base_url: URL base del servidor (ej: Ollama)
         """
         self.model = model
         self.base_url = base_url
-        
+
         logger.info(f"Local LLM Extractor (STUB) inicializado con modelo: {self.model}")
         logger.warning("Local LLM extractor es un stub. Implementación pendiente.")
-    
+
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
         Stub para extracción con LLM local.
-        
+
         Args:
             text: Texto médico
-            
+
         Returns:
             Lista vacía (implementación pendiente)
         """
         logger.warning("Local LLM extractor no implementado. Retornando lista vacía.")
         return []
-    
+
     def meta(self) -> Dict[str, Any]:
         """Retorna metadatos del extractor."""
         return {
@@ -559,7 +580,7 @@ class LocalLLMExtractor:
             "model": self.model,
             "provider": "local",
             "base_url": self.base_url,
-            "status": "stub"
+            "status": "stub",
         }
 
 
@@ -567,22 +588,23 @@ class LocalLLMExtractor:
 # Main LLMExtractor Class (Facade)
 # ============================================================================
 
+
 class LLMExtractor:
     """
     Clase principal que actúa como facade para diferentes extractores LLM.
     Por defecto usa Claude Sonnet 4.5, pero puede configurarse para usar GPT o LLM local.
     """
-    
+
     def __init__(
         self,
         provider: str = "claude",
         api_key: Optional[str] = None,
         model: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ):
         """
         Inicializa el extractor LLM según el proveedor especificado.
-        
+
         Args:
             provider: Proveedor del LLM ("claude", "gpt", "local")
             api_key: API key (si aplica)
@@ -590,35 +612,41 @@ class LLMExtractor:
             **kwargs: Argumentos adicionales para el extractor
         """
         self.provider = provider.lower()
-        
+
         if self.provider == "claude":
-            self.extractor = ClaudeLLMExtractor(api_key=api_key, model=model or "claude-sonnet-4-20250514")
+            self.extractor = ClaudeLLMExtractor(
+                api_key=api_key, model=model or "claude-sonnet-4-20250514"
+            )
         elif self.provider == "gpt":
-            self.extractor = GPTLLMExtractor(api_key=api_key, model=model or "gpt-4o-2024-08-06")
+            self.extractor = GPTLLMExtractor(
+                api_key=api_key, model=model or "gpt-4o-2024-08-06"
+            )
         elif self.provider == "local":
             self.extractor = LocalLLMExtractor(model=model or "llama3.1:8b", **kwargs)
         else:
-            logger.warning(f"Proveedor desconocido: {provider}. Usando Claude por defecto.")
+            logger.warning(
+                f"Proveedor desconocido: {provider}. Usando Claude por defecto."
+            )
             self.extractor = ClaudeLLMExtractor(api_key=api_key)
-        
+
         logger.info(f"LLMExtractor inicializado con proveedor: {self.provider}")
-    
+
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
         Extrae entidades clínicas del texto.
-        
+
         Args:
             text: Texto médico del cual extraer entidades
-            
+
         Returns:
             Lista de diccionarios con entidades en formato compatible con pipeline
         """
         return self.extractor.predict(text)
-    
+
     def meta(self) -> Dict[str, Any]:
         """
         Retorna metadatos del extractor actual.
-        
+
         Returns:
             Diccionario con información del extractor
         """

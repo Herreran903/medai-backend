@@ -1,0 +1,16 @@
+name: Notify Docs on Back Change
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger docs build
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.DOCS_REPO_TOKEN }}
+          repository: Herreran903/docs-medai
+          event-type: back-updated

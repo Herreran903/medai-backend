@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     cors_origins: List[str] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "https://medai-frontend-seven.vercel.app",
     ]
 
     # URI de conexión a la base de datos MongoDB, configurable mediante MONGODB_URI.
@@ -61,36 +62,34 @@ class Settings(BaseSettings):
     # API Key para OpenAI GPT (LLM extractor alternativo)
     openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
 
-    # Configuración de modelos Transformer - BETO
+    # Configuración de modelos Transformer - BETO (FULL)
+    # Nota: el backend actual solo usa el modelo FULL para BETO, igual que para RoBERTa.
+    #       El identificador PEFT se conserva únicamente por compatibilidad, pero no se usa
+    #       en [`TransformerExtractor`](app/models/transformer.py:291) ni en el pipeline.
     transformer_beto_model_id: Optional[str] = Field(
-        default="NicolasUnivalle/beto-vm-ner-full",
-        env="TRANSFORMER_BETO_MODEL_ID"
+        default="NicolasUnivalle/beto-vm-ner-full", env="TRANSFORMER_BETO_MODEL_ID"
     )
     transformer_beto_peft_model_id: Optional[str] = Field(
         default="NicolasUnivalle/beto-vm-ner-peft",
-        env="TRANSFORMER_BETO_PEFT_MODEL_ID"
+        env="TRANSFORMER_BETO_PEFT_MODEL_ID",
+        description=(
+            "DEPRECATED: actualmente no se utiliza; BETO se carga solo como modelo FULL, "
+            "igual que RoBERTa. Campo mantenido solo por compatibilidad de configuración."
+        ),
     )
 
-    # Configuración de modelos Transformer - RoBERTa
+    # Configuración de modelos Transformer - RoBERTa (SOLO FULL)
     transformer_roberta_model_id: Optional[str] = Field(
-        default="PlanTL-GOB-ES/roberta-base-bne",
-        env="TRANSFORMER_ROBERTA_MODEL_ID"
-    )
-    transformer_roberta_base_model_id: Optional[str] = Field(
-        default="PlanTL-GOB-ES/roberta-base-bne",
-        env="TRANSFORMER_ROBERTA_BASE_MODEL_ID"
-    )
-    transformer_roberta_peft_model_id: Optional[str] = Field(
-        default="NicolasUnivalle/roberta-spanish-ner-peft",
-        env="TRANSFORMER_ROBERTA_PEFT_MODEL_ID"
+        default="NicolasUnivalle/roberta-vm-ner-full",
+        env="TRANSFORMER_ROBERTA_MODEL_ID",
     )
 
     # Configuración adicional para Pydantic Settings.
     model_config = SettingsConfigDict(
-        env_file=".env.dev",  # Archivo de entorno predeterminado.
-        env_file_encoding="utf-8",  # Codificación del archivo de entorno.
-        case_sensitive=False,  # Las variables de entorno no son sensibles a mayúsculas/minúsculas.
-        env_ignore_empty=True,  # Ignora variables de entorno vacías.
+        env_file=".env.dev",  # Archivo de entorno predeterminado
+        env_file_encoding="utf-8",  # Codificación del archivo de entorno
+        case_sensitive=False,  # Variables de entorno no sensibles a mayúsculas
+        env_ignore_empty=True,  # Ignora variables de entorno vacías
     )
 
 
