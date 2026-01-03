@@ -1,7 +1,51 @@
-# normalizer.py
-# Este módulo proporciona funciones para normalizar entidades médicas utilizando la API de UMLS.
-# Incluye métodos para calcular similitudes entre cadenas, buscar conceptos en UMLS y seleccionar
-# los mejores candidatos según criterios específicos.
+"""
+Medical Entity Normalization Service.
+
+This module provides entity normalization capabilities using the UMLS
+(Unified Medical Language System) API to link extracted clinical entities
+to standardized medical terminologies (SNOMED-CT, ICD-10).
+
+Architecture Context:
+    Entity normalization is an optional post-processing step in the MedAI
+    extraction pipeline. After NER models identify entity spans, this service
+    can enrich diagnosis entities (DX) with standardized codes.
+
+    The normalization workflow:
+
+    1. Search UMLS for candidate concepts matching entity text
+    2. Retrieve atoms (codes) for each candidate CUI
+    3. Score candidates using semantic similarity
+    4. Select best matching code based on terminology priority
+
+Supported Terminologies:
+    - **SNOMED-CT** (SNOMEDCT_US): Preferred for clinical concepts
+    - **ICD-10-CM** (ICD10CM): Required for billing and reporting
+
+Similarity Scoring:
+    The service uses a hybrid similarity approach combining:
+
+    - Multilingual semantic embeddings (via :mod:`app.services.semantic_sim`)
+    - Fuzzy string matching (token sort ratio, WRatio)
+    - Jaccard similarity on content tokens
+    - Terminology-specific bonuses (SAB priority, preferred terms)
+
+Configuration:
+    - ``UMLS_APIKEY``: Required environment variable for UMLS API access
+    - Minimum link score threshold: 0.60 (configurable via :class:`NormOptions`)
+
+Usage:
+    >>> from app.services.normalizer import normalize_entities, NormOptions
+    >>> entities = [{"type": "DX", "text": "neumonía"}]
+    >>> opts = NormOptions(enabled=True, systems=["SNOMEDCT_US"])
+    >>> normalized = normalize_entities(entities, opts)
+    >>> print(normalized[0]["codes"][0]["system"])
+    'SNOMEDCT_US'
+
+See Also:
+    - :mod:`app.services.pipeline` for integration with extraction
+    - :mod:`app.services.semantic_sim` for embedding-based similarity
+    - :mod:`app.services.translator` for Spanish-English translation
+"""
 
 from __future__ import annotations
 
@@ -20,22 +64,52 @@ from urllib3.util.retry import Retry
 from app.services.semantic_sim import sim_texts
 from app.services.translator import translate_es_to_en
 
-# Variables globales para configuración de la API de UMLS
+# UMLS API configuration
 UMLS_APIKEY = os.getenv("UMLS_APIKEY")
-UMLS_BASE = "https://uts-ws.nlm.nih.gov"
-UMLS_VER = "current"
+"""UMLS API key from environment. Required for normalization."""
 
-# Diccionario que mapea tipos de entidades a sistemas de codificación preferidos
+UMLS_BASE = "https://uts-ws.nlm.nih.gov"
+"""UMLS REST API base URL."""
+
+UMLS_VER = "current"
+"""UMLS version identifier (uses current release)."""
+
+# Terminology mapping by entity type
 TYPE_TO_SABS: Dict[str, List[str]] = {
     "DX": ["SNOMEDCT_US", "ICD10CM"],
 }
+"""
+Mapping of entity types to preferred terminology sources (SABs).
 
-# Ranking de tipos de términos (TTY) para priorizar términos preferidos
+Currently only diagnosis entities (DX) are normalized. The order
+determines priority when multiple codes are available.
+"""
+
+# Term type ranking for preferred term selection
 TTY_RANK = {"PT": 3, "FN": 2, "SY": 1}
+"""
+Term type (TTY) ranking for atom selection.
+
+- PT (Preferred Term): Highest priority
+- FN (Full Name): Medium priority
+- SY (Synonym): Lowest priority
+"""
 
 
-# Función para eliminar acentos de una cadena
 def _strip_accents(s: str) -> str:
+    """
+    Remove diacritical marks (accents) from text.
+
+    Args:
+        s: Input string with potential accents.
+
+    Returns:
+        String with accents removed.
+
+    Example:
+        >>> _strip_accents("neumonía")
+        'neumonia'
+    """
     return "".join(
         c
         for c in unicodedata.normalize("NFD", s or "")
@@ -43,21 +117,42 @@ def _strip_accents(s: str) -> str:
     )
 
 
-# Normaliza cadenas eliminando acentos, espacios extra y convirtiendo a minúsculas
 def _norm(s: str) -> str:
+    """
+    Normalize string for comparison.
+
+    Applies accent removal, lowercase conversion, and whitespace normalization.
+
+    Args:
+        s: Input string.
+
+    Returns:
+        Normalized string.
+    """
     s = _strip_accents(s).lower().strip()
     return re.sub(r"\s+", " ", s)
 
 
-# Calcula la similitud de Jaccard entre dos cadenas normalizadas
 def _jaccard(a: str, b: str) -> float:
+    """
+    Calculate Jaccard similarity between two strings.
+
+    Computes the ratio of shared words to total unique words.
+
+    Args:
+        a: First string.
+        b: Second string.
+
+    Returns:
+        Jaccard similarity score (0.0 to 1.0).
+    """
     A, B = set(_norm(a).split()), set(_norm(b).split())
     if not A or not B:
         return 0.0
     return len(A & B) / len(A | B)
 
 
-# Conjunto de palabras vacías en inglés que no aportan significado semántico
+# English stopwords for content token extraction
 STOP_EN = {
     "of",
     "the",
@@ -72,41 +167,63 @@ STOP_EN = {
     "an",
     "a",
 }
+"""Common English stopwords excluded from content token comparison."""
 
 
-# Extrae tokens significativos de una cadena, excluyendo palabras vacías
 def _content_tokens(s: str) -> set:
+    """
+    Extract meaningful content tokens from text.
+
+    Removes stopwords and returns unique alphabetic tokens.
+
+    Args:
+        s: Input string.
+
+    Returns:
+        Set of content tokens.
+    """
     toks = re.findall(r"[a-zA-Z]+", _norm(s))
     return {t for t in toks if t not in STOP_EN}
 
 
-# Calcula una similitud híbrida entre una cadena en español y otra en inglés
 def _string_sim_bilingual(span_es: str, name_en: str) -> float:
     """
-    Calcula una similitud conservadora entre cadenas en español e inglés.
-    Utiliza traducción, fuzzy matching y Jaccard para reducir falsos positivos.
+    Calculate bilingual similarity between Spanish and English text.
+
+    Uses translation and multiple similarity metrics to compare
+    a Spanish entity span with an English concept name.
+
+    Args:
+        span_es: Spanish text (entity span).
+        name_en: English text (UMLS concept name).
+
+    Returns:
+        Similarity score (0.0 to 1.0).
+
+    Algorithm:
+        1. Translate Spanish to English
+        2. Compute fuzzy string similarity (WRatio, token_sort_ratio)
+        3. Compute Jaccard similarity
+        4. Apply penalty for extra tokens in target
+        5. Combine with weighted average
     """
     if not span_es or not name_en:
         return 0.0
     try:
-        # Traduce la cadena en español al inglés
         span_en = translate_es_to_en(span_es) or span_es
     except Exception:
         span_en = span_es
 
-    # Normaliza ambas cadenas
     span_en_n = _norm(span_en)
     name_en_n = _norm(name_en)
 
-    # Calcula similitudes fuzzy
     s_wr = fuzz.WRatio(span_en_n, name_en_n) / 100.0
     s_ts = fuzz.token_sort_ratio(span_en_n, name_en_n) / 100.0
     base = max(s_wr, s_ts)
 
-    # Calcula similitud de Jaccard
     s_jac = _jaccard(span_en_n, name_en_n)
 
-    # Calcula penalización basada en tokens adicionales en la cadena objetivo
+    # Penalty for extra tokens in candidate
     q = _content_tokens(span_en_n)
     c = _content_tokens(name_en_n)
     if q:
@@ -115,36 +232,47 @@ def _string_sim_bilingual(span_es: str, name_en: str) -> float:
     else:
         penalty = 0.0
 
-    # Combina las similitudes y aplica penalización
     hybrid = 0.7 * base + 0.3 * s_jac
     score = hybrid - penalty
     return max(0.0, min(1.0, score))
 
 
-# Calcula una similitud híbrida entre cadenas usando embeddings y fuzzy matching
 def _string_sim_semantic(span_es: str, name_en: str) -> float:
     """
-    Calcula una similitud híbrida entre cadenas sin traducción.
-    Combina embeddings multilingües, fuzzy matching y Jaccard.
+    Calculate semantic similarity using multilingual embeddings.
+
+    Combines embedding-based similarity with fuzzy string matching
+    for robust cross-lingual comparison.
+
+    Args:
+        span_es: Spanish text (entity span).
+        name_en: English text (UMLS concept name).
+
+    Returns:
+        Similarity score (0.0 to 1.0).
+
+    Algorithm:
+        1. Compute multilingual embedding similarity
+        2. Compute fuzzy string similarity
+        3. Compute Jaccard similarity
+        4. Apply length ratio penalty
+        5. Combine with weighted average (60% embedding, 30% fuzzy, 10% Jaccard)
     """
     if not span_es or not name_en:
         return 0.0
 
-    # Normaliza las cadenas
     span_n = _norm(span_es)
     name_n = _norm(name_en)
 
-    # Calcula similitud usando embeddings multilingües
-    s_emb = sim_texts(span_n, name_n)  # 0..1
-    s_wr = fuzz.WRatio(span_n, name_n) / 100.0  # 0..1
+    s_emb = sim_texts(span_n, name_n)
+    s_wr = fuzz.WRatio(span_n, name_n) / 100.0
     s_ts = fuzz.token_sort_ratio(span_n, name_n) / 100.0
     s_jac = _jaccard(span_n, name_n)
 
-    # Combina las similitudes con pesos específicos
     base = max(s_wr, s_ts)
     hybrid = 0.6 * s_emb + 0.3 * base + 0.1 * s_jac
 
-    # Aplica penalización basada en la longitud relativa de las cadenas
+    # Length ratio penalty
     la, lb = max(1, len(span_n)), max(1, len(name_n))
     ratio = min(la, lb) / max(la, lb)
     penalty = 0.0 if ratio >= 0.35 else (0.35 - ratio) * 0.3
@@ -153,21 +281,40 @@ def _string_sim_semantic(span_es: str, name_en: str) -> float:
     return score
 
 
-# Verifica si un código pasa los criterios de una lista blanca de VSAC
 def _passes_vsac(system: str, code: str, white: Optional[Dict[str, set]]) -> bool:
+    """
+    Check if a code passes VSAC whitelist filtering.
+
+    Args:
+        system: Terminology system (e.g., "SNOMEDCT_US").
+        code: Code value.
+        white: Optional whitelist mapping system to allowed codes.
+
+    Returns:
+        True if code passes filter (or no filter configured).
+    """
     if not white:
         return True
     allow = white.get(system)
     return True if not allow else code in allow
 
 
-# Determina la prioridad de sistemas de codificación para un tipo de entidad
 def _guess_priority_for_type(ent_type: str, systems: Optional[List[str]]) -> List[str]:
+    """
+    Determine terminology priority for an entity type.
+
+    Args:
+        ent_type: Entity type (e.g., "DX").
+        systems: Optional list of allowed systems.
+
+    Returns:
+        Ordered list of terminology sources to search.
+    """
     base = TYPE_TO_SABS.get(ent_type, [])
     return [s for s in base if (not systems or s in systems)]
 
 
-# Configura una sesión HTTP con reintentos automáticos para llamadas a la API
+# HTTP session with retry configuration
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "UMLS-Normalizer/1.0"})
 
@@ -183,10 +330,24 @@ SESSION.mount("https://", _adapter)
 SESSION.mount("http://", _adapter)
 
 
-# Realiza una solicitud GET a la API de UMLS con manejo de errores
 def _get(url: str, params: dict, timeout: int = 30) -> dict:
+    """
+    Execute GET request to UMLS API with error handling.
+
+    Args:
+        url: API endpoint URL.
+        params: Query parameters.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        Parsed JSON response.
+
+    Raises:
+        RuntimeError: If UMLS_APIKEY is not configured.
+        requests.HTTPError: On API error responses.
+    """
     if not UMLS_APIKEY:
-        raise RuntimeError("Falta UMLS_APIKEY en entorno (.env)")
+        raise RuntimeError("Missing UMLS_APIKEY in environment (.env)")
     params = dict(params or {})
     params.setdefault("apiKey", UMLS_APIKEY)
     r = SESSION.get(url, params=params, timeout=timeout)
@@ -194,9 +355,23 @@ def _get(url: str, params: dict, timeout: int = 30) -> dict:
     return r.json()
 
 
-# Busca conceptos en UMLS y calcula similitudes con la consulta
 @lru_cache(maxsize=4096)
 def umls_search_cuis(query: str, page_size: int = 25) -> List[Tuple[str, str, float]]:
+    """
+    Search UMLS for concept identifiers (CUIs) matching a query.
+
+    Performs a word-based search and scores results using semantic similarity.
+
+    Args:
+        query: Search query (entity text).
+        page_size: Maximum number of results to return.
+
+    Returns:
+        List of (CUI, name, similarity_score) tuples, sorted by score descending.
+
+    Note:
+        Results are cached to reduce API calls for repeated queries.
+    """
     url = f"{UMLS_BASE}/rest/search/{UMLS_VER}"
     js = _get(url, {"string": query, "searchType": "words", "pageSize": page_size})
     results = js.get("result", {}).get("results", []) or []
@@ -212,11 +387,24 @@ def umls_search_cuis(query: str, page_size: int = 25) -> List[Tuple[str, str, fl
     return out
 
 
-# Obtiene átomos (términos específicos) para un CUI en UMLS
 @lru_cache(maxsize=4096)
 def umls_atoms_for_cui(
     cui: str, sabs: Tuple[str, ...] = (), page_size: int = 100
 ) -> List[Dict]:
+    """
+    Retrieve atoms (terminology codes) for a UMLS concept.
+
+    Args:
+        cui: UMLS Concept Unique Identifier.
+        sabs: Tuple of source abbreviations to filter (empty = all).
+        page_size: Maximum atoms to retrieve.
+
+    Returns:
+        List of atom dictionaries with keys: sab, code, name, tty.
+
+    Note:
+        Results are cached to reduce API calls.
+    """
     url = f"{UMLS_BASE}/rest/content/{UMLS_VER}/CUI/{cui}/atoms"
     js = _get(url, {"pageSize": page_size})
     items = js.get("result", []) or []
@@ -237,8 +425,21 @@ def umls_atoms_for_cui(
     return out
 
 
-# Selecciona el mejor átomo basado en prioridades de SAB y TTY
 def pick_best_atom(atoms: List[Dict], target_priority: List[str]) -> Optional[Dict]:
+    """
+    Select the best atom based on terminology and term type priority.
+
+    Args:
+        atoms: List of atom dictionaries.
+        target_priority: Ordered list of preferred terminology sources.
+
+    Returns:
+        Best matching atom dictionary, or None if no match.
+
+    Algorithm:
+        Iterates through terminologies in priority order, selecting
+        the atom with the highest term type rank (PT > FN > SY).
+    """
     best, best_score = None, -1
     for sab in target_priority:
         for a in atoms:
@@ -250,9 +451,28 @@ def pick_best_atom(atoms: List[Dict], target_priority: List[str]) -> Optional[Di
     return best
 
 
-# Clase para opciones de normalización de entidades
 @dataclass
 class NormOptions:
+    """
+    Configuration options for entity normalization.
+
+    Attributes:
+        enabled: Whether normalization is active.
+        min_link_score: Minimum similarity score for code assignment (0.0-1.0).
+        max_candidates: Maximum UMLS candidates to evaluate per entity.
+        systems: List of allowed terminology systems (None = all configured).
+        restrict_types: Entity types to normalize (None = all supported).
+        vsac_whitelists: Optional code whitelists by system.
+
+    Example:
+        >>> opts = NormOptions(
+        ...     enabled=True,
+        ...     min_link_score=0.70,
+        ...     systems=["SNOMEDCT_US"],
+        ...     restrict_types=["DX"]
+        ... )
+    """
+
     enabled: bool = True
     min_link_score: float = 0.60
     max_candidates: int = 25
@@ -261,8 +481,41 @@ class NormOptions:
     vsac_whitelists: Dict[str, set] | None = None
 
 
-# Normaliza una lista de entidades utilizando UMLS y opciones configuradas
 def normalize_entities(entities: List[Dict], opts: NormOptions) -> List[Dict]:
+    """
+    Normalize a list of entities with UMLS codes.
+
+    Processes each entity through the UMLS lookup pipeline, assigning
+    standardized codes from configured terminology systems.
+
+    Args:
+        entities: List of entity dictionaries from extraction.
+        opts: Normalization configuration options.
+
+    Returns:
+        List of entities with added ``codes`` and ``code`` fields.
+
+    Algorithm:
+        For each DX entity:
+
+        1. Search UMLS for candidate concepts
+        2. Filter candidates by minimum similarity score
+        3. Retrieve atoms for each candidate CUI
+        4. Select best atom per terminology priority
+        5. Score final candidates with bonuses
+        6. Deduplicate and sort codes by score
+
+    Note:
+        Only DX (diagnosis) entities are currently normalized.
+        Other entity types are returned unchanged.
+
+    Example:
+        >>> entities = [{"type": "DX", "text": "neumonía", "start": 0, "end": 8}]
+        >>> opts = NormOptions(enabled=True)
+        >>> result = normalize_entities(entities, opts)
+        >>> print(result[0]["codes"][0]["system"])
+        'SNOMEDCT_US'
+    """
     if not opts.enabled:
         return entities
 
@@ -270,23 +523,23 @@ def normalize_entities(entities: List[Dict], opts: NormOptions) -> List[Dict]:
     for e in entities:
         ent_type = e.get("type", "")
 
-        # Si el tipo de entidad no es "DX", se omite la normalización
+        # Only normalize DX entities
         if ent_type != "DX":
             normalized.append(e)
             continue
 
-        # Verifica si el tipo de entidad está restringido
+        # Check type restrictions
         if opts.restrict_types and ent_type not in opts.restrict_types:
             normalized.append(e)
             continue
 
-        # Obtiene la prioridad de sistemas de codificación para el tipo de entidad
+        # Get terminology priority for entity type
         target_priority = _guess_priority_for_type(ent_type, opts.systems)
         if not target_priority:
             normalized.append(e)
             continue
 
-        # Busca candidatos en UMLS y filtra por puntaje mínimo
+        # Search UMLS for candidates
         span = e.get("text") or ""
         candidates = umls_search_cuis(span, page_size=opts.max_candidates)
         candidates = [
@@ -297,7 +550,7 @@ def normalize_entities(entities: List[Dict], opts: NormOptions) -> List[Dict]:
 
         codes: List[Dict] = []
         for cui, name, base_sim in candidates:
-            # Obtiene átomos para el CUI y selecciona el mejor
+            # Get atoms for candidate CUI
             atoms = umls_atoms_for_cui(cui, sabs=tuple(target_priority))
             if not atoms:
                 continue
@@ -305,12 +558,12 @@ def normalize_entities(entities: List[Dict], opts: NormOptions) -> List[Dict]:
             if not best:
                 continue
 
-            # Verifica si el código pasa los criterios de VSAC
+            # Check VSAC whitelist
             system, code, disp = best["sab"], best["code"], best.get("name")
             if not _passes_vsac(system, code, opts.vsac_whitelists):
                 continue
 
-            # Calcula puntaje final con bonificaciones
+            # Calculate final score with bonuses
             sab_bonus = (len(target_priority) - target_priority.index(system)) * 0.02
             tty_bonus = 0.02 if (best.get("tty") == "PT") else 0.0
             sim_to_disp = _string_sim_semantic(span, disp or name or "")
@@ -326,7 +579,7 @@ def normalize_entities(entities: List[Dict], opts: NormOptions) -> List[Dict]:
                 }
             )
 
-        # Deduplica y ordena los códigos por puntaje
+        # Deduplicate and sort codes
         if codes:
             seen = set()
             dedup = []

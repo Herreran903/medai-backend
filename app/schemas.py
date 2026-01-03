@@ -1,94 +1,480 @@
-# Este archivo define los esquemas de datos utilizados en la aplicación backend de "medai".
-# Los esquemas están diseñados con Pydantic para validar y estructurar datos relacionados con
-# entidades extraídas, respuestas de extracción, y acuses de recibo (ACKs) en operaciones batch.
+"""
+Pydantic Schema Definitions for MedAI Backend API.
+
+This module defines the data transfer objects (DTOs) used throughout the MedAI
+backend for request validation, response serialization, and OpenAPI documentation.
+
+Architecture Context:
+    MedAI processes clinical notes to extract medical entities using NLP models.
+    The schemas in this module represent:
+
+    - **Domain Objects**: Clinical entities and their associated codes
+    - **API Responses**: Extraction results and acknowledgments
+    - **Batch Operations**: Multi-file processing results
+
+Schema Hierarchy:
+    .. code-block:: text
+
+        Code
+          └── Entity (contains List[Code])
+                └── ExtractResponse (contains List[Entity])
+                      └── ExtractAck (contains Optional[ExtractResponse])
+
+        BatchItem
+          └── BatchAckItem
+                └── BatchAckResponse (contains List[BatchAckItem])
+
+Domain Model:
+    The entity extraction domain follows this conceptual model:
+
+    - **Entity**: A span of text identified as a clinical concept (e.g., diagnosis,
+      medication, vital sign) with optional character offsets and confidence score.
+    - **Code**: A standardized medical code (SNOMED-CT, ICD-10) linked to an entity
+      through the UMLS normalization process.
+
+Usage:
+    These schemas are used in FastAPI route definitions for automatic
+    request validation and OpenAPI schema generation::
+
+        @router.post("/extract", response_model=ExtractAck)
+        async def extract(...) -> ExtractAck:
+            ...
+
+See Also:
+    - :mod:`app.routers.extract` for API endpoint usage
+    - :mod:`app.services.normalizer` for code assignment logic
+"""
 
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-# ------------------------------
-# Esquemas para entidades y códigos
-# ------------------------------
+# ==============================================================================
+# Medical Coding Schemas
+# ==============================================================================
 
 
-# Representa un código asociado a una entidad, con información opcional como puntaje y fuente.
 class Code(BaseModel):
-    system: str  # Sistema de codificación (ej. SNOMED, ICD-10).
-    code: str  # Código específico dentro del sistema.
-    display: Optional[str] = None  # Descripción legible del código.
-    score: Optional[float] = None  # Confianza asociada al código (si aplica).
-    source: Optional[str] = None  # Fuente del código (ej. modelo, usuario).
+    """
+    Standardized medical code associated with a clinical entity.
 
+    Represents a code from a medical terminology system (e.g., SNOMED-CT, ICD-10)
+    that has been linked to an extracted entity through the normalization process.
 
-# Representa una entidad extraída de un texto, con información como tipo, ubicación y códigos asociados.
-class Entity(BaseModel):
-    type: str  # Tipo de la entidad (ej. "diagnóstico", "medicación").
-    text: str  # Texto exacto que corresponde a la entidad.
-    score: Optional[float] = None  # Confianza en la extracción de la entidad.
-    code: Optional[str] = None  # Código principal asociado a la entidad (si aplica).
-    start: Optional[int] = None  # Índice de inicio del texto en el documento original.
-    end: Optional[int] = None  # Índice de fin del texto en el documento original.
-    codes: List[Code] = Field(
-        default_factory=list
-    )  # Lista de códigos adicionales asociados.
+    The code assignment is performed by :mod:`app.services.normalizer` using
+    UMLS (Unified Medical Language System) lookups and semantic similarity matching.
 
+    Attributes:
+        system: The coding system identifier (vocabulary source).
+            Common values: "SNOMEDCT_US", "ICD10CM", "LOINC", "RXNORM".
+        code: The specific code within the system.
+            Format varies by system (e.g., "38341003" for SNOMED-CT).
+        display: Human-readable description of the code.
+            Typically the preferred term from the terminology.
+        score: Confidence score for the code assignment (0.0 to 1.0).
+            Based on semantic similarity between entity text and code description.
+        source: Origin of the code assignment.
+            Typically "UMLS" for normalized codes.
 
-# ------------------------------
-# Esquemas para respuestas de extracción
-# ------------------------------
+    Example:
+        >>> code = Code(
+        ...     system="SNOMEDCT_US",
+        ...     code="233604007",
+        ...     display="Pneumonia",
+        ...     score=0.92,
+        ...     source="UMLS"
+        ... )
+    """
 
-
-# Representa la respuesta de una operación de extracción, incluyendo el texto procesado y las entidades detectadas.
-class ExtractResponse(BaseModel):
-    text: str  # Texto completo procesado durante la extracción.
-    entities: List[Entity] = Field(
-        default_factory=list
-    )  # Lista de entidades extraídas.
-    meta: Dict[str, Any] = Field(
-        default_factory=dict
-    )  # Metadatos adicionales sobre la extracción.
-
-
-# Representa un ítem individual en un procesamiento batch, con entidades y metadatos asociados.
-class BatchItem(BaseModel):
-    filename: str  # Nombre del archivo procesado.
-    entities: List[Entity] = Field(
-        default_factory=list
-    )  # Entidades extraídas del archivo.
-    meta: Dict[str, Any] = Field(
-        default_factory=dict
-    )  # Metadatos adicionales sobre el archivo.
-
-
-# ------------------------------
-# Esquemas para acuses de recibo (ACKs)
-# ------------------------------
-
-
-# Representa un acuse de recibo para una operación de extracción, con información sobre el estado y resultado.
-class ExtractAck(BaseModel):
-    id: str  # Identificador único del acuse de recibo.
-    stored: bool  # Indica si el resultado fue almacenado exitosamente.
-    url: Optional[str] = None  # URL donde se almacenó el resultado (si aplica).
-    filename: Optional[str] = None  # Nombre del archivo asociado al acuse.
-    episode_id: Optional[str] = None  # Identificador del episodio clínico (si aplica).
-    note_date: Optional[str] = None  # Fecha de la nota procesada (si aplica).
-    entity_count: Optional[int] = None  # Número total de entidades extraídas.
-    result: Optional[ExtractResponse] = (
-        None  # Resultado completo de la extracción (si aplica).
+    system: str = Field(
+        ...,
+        description="Medical coding system identifier (e.g., SNOMEDCT_US, ICD10CM).",
+        json_schema_extra={"example": "SNOMEDCT_US"},
+    )
+    code: str = Field(
+        ...,
+        description="Code value within the specified system.",
+        json_schema_extra={"example": "233604007"},
+    )
+    display: Optional[str] = Field(
+        default=None,
+        description="Human-readable description of the code.",
+        json_schema_extra={"example": "Pneumonia"},
+    )
+    score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score for code assignment (0.0-1.0).",
+        json_schema_extra={"example": 0.92},
+    )
+    source: Optional[str] = Field(
+        default=None,
+        description="Source of the code assignment (e.g., UMLS, manual).",
+        json_schema_extra={"example": "UMLS"},
     )
 
 
-# Representa un ítem individual en un acuse de recibo batch, con información sobre errores o estado.
+class Entity(BaseModel):
+    """
+    Clinical entity extracted from medical text.
+
+    Represents a named entity identified by the NER models, including its
+    type classification, text span, confidence score, and optional
+    standardized codes from medical terminologies.
+
+    Entity Types:
+        MedAI recognizes entities specific to mechanical ventilation clinical notes:
+
+        **Ventilation Configuration:**
+            - ``MODO``: Ventilator mode (AC/VC, PC, SIMV, PSV, CPAP)
+            - ``FIO2``: Fraction of inspired oxygen (%)
+            - ``PEEP``: Positive end-expiratory pressure (cmH2O)
+            - ``FR``: Respiratory rate (breaths/min)
+            - ``VT``: Tidal volume (mL)
+            - ``FLUJO``: Inspiratory flow (L/min)
+            - ``I_E``: Inspiration:expiration ratio
+            - ``SENS``: Trigger sensitivity
+
+        **Ventilation Response:**
+            - ``SAO2``: Oxygen saturation (%)
+            - ``PP``: Peak airway pressure (cmH2O)
+            - ``PMES``: Plateau pressure (cmH2O)
+            - ``PM``: Mechanical power
+
+        **Anthropometrics:**
+            - ``EDAD``: Patient age (years)
+            - ``PESO``: Body weight (kg)
+            - ``TALLA``: Height (m)
+
+        **Vital Signs:**
+            - ``TEMP``: Body temperature (°C)
+            - ``PA``: Blood pressure (mmHg)
+            - ``FC``: Heart rate (bpm)
+            - ``GLICEMIA``: Blood glucose (mg/dL)
+
+        **Arterial Blood Gases:**
+            - ``PH``: Arterial pH
+            - ``PACO2``: Partial pressure of CO2 (mmHg)
+            - ``PAO2``: Partial pressure of O2 (mmHg)
+            - ``PAFI``: PaO2/FiO2 ratio
+
+        **Clinical:**
+            - ``DX``: Diagnosis (normalizable to SNOMED-CT/ICD-10)
+
+    Attributes:
+        type: Entity type classification from the NER model.
+        text: Exact text span from the source document.
+        score: Model confidence score for the extraction (0.0 to 1.0).
+        code: Primary normalized code (shorthand for codes[0].code).
+        start: Character offset where entity begins in source text.
+        end: Character offset where entity ends in source text.
+        codes: List of normalized medical codes from UMLS lookup.
+
+    Example:
+        >>> entity = Entity(
+        ...     type="DX",
+        ...     text="neumonía adquirida en comunidad",
+        ...     score=0.95,
+        ...     start=45,
+        ...     end=76,
+        ...     codes=[
+        ...         Code(system="SNOMEDCT_US", code="385093006", display="Community acquired pneumonia")
+        ...     ]
+        ... )
+    """
+
+    type: str = Field(
+        ...,
+        description="Entity type classification (e.g., DX, FIO2, PEEP, TEMP).",
+        json_schema_extra={"example": "DX"},
+    )
+    text: str = Field(
+        ...,
+        description="Exact text span extracted from the source document.",
+        json_schema_extra={"example": "neumonía adquirida en comunidad"},
+    )
+    score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Model confidence score for the extraction (0.0-1.0).",
+        json_schema_extra={"example": 0.95},
+    )
+    code: Optional[str] = Field(
+        default=None,
+        description="Primary normalized code (shorthand for first code in codes list).",
+        json_schema_extra={"example": "385093006"},
+    )
+    start: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Character offset where entity begins in source text.",
+        json_schema_extra={"example": 45},
+    )
+    end: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Character offset where entity ends in source text.",
+        json_schema_extra={"example": 76},
+    )
+    codes: List[Code] = Field(
+        default_factory=list,
+        description="List of normalized medical codes from UMLS lookup.",
+    )
+
+
+# ==============================================================================
+# Extraction Response Schemas
+# ==============================================================================
+
+
+class ExtractResponse(BaseModel):
+    """
+    Complete extraction result from a clinical note.
+
+    Contains the processed text, all extracted entities, and metadata
+    about the extraction process. This is the primary response format
+    for the ``GET /notes/{note_id}`` endpoint.
+
+    Attributes:
+        text: The complete source text that was processed.
+        entities: List of extracted clinical entities with their codes.
+        meta: Extraction metadata including model info and statistics.
+
+    Metadata Fields:
+        The ``meta`` dictionary typically contains:
+
+        - ``model``: Extraction model used (lstm, transformer, llm)
+        - ``count``: Number of entities extracted
+        - ``normalized``: Whether UMLS normalization was applied
+        - ``variant``: Model variant (beto, roberta, claude, gpt)
+
+    Example:
+        >>> response = ExtractResponse(
+        ...     text="Paciente con FiO2 60%, PEEP 8 cmH2O",
+        ...     entities=[
+        ...         Entity(type="FIO2", text="60%", start=18, end=21),
+        ...         Entity(type="PEEP", text="8 cmH2O", start=28, end=35),
+        ...     ],
+        ...     meta={"model": "transformer", "count": 2, "normalized": False}
+        ... )
+    """
+
+    text: str = Field(
+        ...,
+        description="Complete source text that was processed for entity extraction.",
+        json_schema_extra={"example": "Paciente con FiO2 60%, PEEP 8 cmH2O"},
+    )
+    entities: List[Entity] = Field(
+        default_factory=list,
+        description="List of clinical entities extracted from the text.",
+    )
+    meta: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extraction metadata including model info and statistics.",
+        json_schema_extra={"example": {"model": "transformer", "count": 2}},
+    )
+
+
+class BatchItem(BaseModel):
+    """
+    Single item result in a batch extraction operation.
+
+    Represents the extraction result for one file in a batch processing
+    request. Used internally during batch processing.
+
+    Attributes:
+        filename: Original filename of the processed document.
+        entities: List of entities extracted from this file.
+        meta: File-specific extraction metadata.
+
+    Note:
+        This schema is used internally. API responses use :class:`BatchAckItem`.
+    """
+
+    filename: str = Field(
+        ...,
+        description="Original filename of the processed document.",
+        json_schema_extra={"example": "nota_clinica_001.pdf"},
+    )
+    entities: List[Entity] = Field(
+        default_factory=list,
+        description="Entities extracted from this file.",
+    )
+    meta: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="File-specific extraction metadata.",
+    )
+
+
+# ==============================================================================
+# Acknowledgment Schemas
+# ==============================================================================
+
+
+class ExtractAck(BaseModel):
+    """
+    Acknowledgment response for single extraction requests.
+
+    Returned by the ``POST /extract`` endpoint to confirm processing
+    and provide access information for the stored result.
+
+    This schema provides:
+
+    - Confirmation of successful processing
+    - Storage status and location
+    - Summary statistics
+    - Optional full result (when ``expand=true``)
+
+    Attributes:
+        id: Unique identifier for the stored note (UUID format).
+        stored: Whether the result was persisted to MongoDB.
+        url: Relative URL to retrieve the full extraction result.
+        filename: Original filename if a file was uploaded.
+        episode_id: Clinical episode identifier for grouping notes.
+        note_date: ISO 8601 date of the clinical note.
+        entity_count: Number of entities extracted.
+        result: Full extraction result (only when expand=true).
+
+    Example:
+        >>> ack = ExtractAck(
+        ...     id="550e8400-e29b-41d4-a716-446655440000",
+        ...     stored=True,
+        ...     url="/notes/550e8400-e29b-41d4-a716-446655440000",
+        ...     episode_id="EP-2024-001",
+        ...     note_date="2024-01-15T10:30:00",
+        ...     entity_count=12
+        ... )
+    """
+
+    id: str = Field(
+        ...,
+        description="Unique identifier for the stored note (UUID format).",
+        json_schema_extra={"example": "550e8400-e29b-41d4-a716-446655440000"},
+    )
+    stored: bool = Field(
+        ...,
+        description="Whether the extraction result was persisted to storage.",
+        json_schema_extra={"example": True},
+    )
+    url: Optional[str] = Field(
+        default=None,
+        description="Relative URL to retrieve the full extraction result.",
+        json_schema_extra={"example": "/notes/550e8400-e29b-41d4-a716-446655440000"},
+    )
+    filename: Optional[str] = Field(
+        default=None,
+        description="Original filename if a file was uploaded.",
+        json_schema_extra={"example": "nota_clinica.pdf"},
+    )
+    episode_id: Optional[str] = Field(
+        default=None,
+        description="Clinical episode identifier for grouping related notes.",
+        json_schema_extra={"example": "EP-2024-001"},
+    )
+    note_date: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 formatted date of the clinical note.",
+        json_schema_extra={"example": "2024-01-15T10:30:00"},
+    )
+    entity_count: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Total number of entities extracted from the note.",
+        json_schema_extra={"example": 12},
+    )
+    result: Optional[ExtractResponse] = Field(
+        default=None,
+        description="Full extraction result (included when expand=true parameter is set).",
+    )
+
+
 class BatchAckItem(BaseModel):
-    filename: str  # Nombre del archivo procesado.
-    id: Optional[str] = None  # Identificador único del ítem (si aplica).
-    stored: bool  # Indica si el ítem fue almacenado exitosamente.
-    entity_count: Optional[int] = None  # Número de entidades extraídas en el archivo.
-    url: Optional[str] = None  # URL donde se almacenó el resultado (si aplica).
-    error: Optional[str] = None  # Mensaje de error en caso de fallo.
+    """
+    Acknowledgment for a single file in batch processing.
+
+    Represents the processing status for one file in a batch extraction
+    request, including success/failure status and error details.
+
+    Attributes:
+        filename: Original filename of the processed document.
+        id: Unique note identifier if successfully stored.
+        stored: Whether this file's result was persisted.
+        entity_count: Number of entities extracted (if successful).
+        url: Relative URL to retrieve the result (if stored).
+        error: Error message if processing failed.
+
+    Example:
+        >>> # Successful item
+        >>> item = BatchAckItem(
+        ...     filename="nota_001.pdf",
+        ...     id="uuid-here",
+        ...     stored=True,
+        ...     entity_count=8,
+        ...     url="/notes/uuid-here"
+        ... )
+        >>> # Failed item
+        >>> item = BatchAckItem(
+        ...     filename="nota_002.pdf",
+        ...     stored=False,
+        ...     error="Missing episode_id for 'nota_002.pdf'"
+        ... )
+    """
+
+    filename: str = Field(
+        ...,
+        description="Original filename of the processed document.",
+        json_schema_extra={"example": "nota_clinica_001.pdf"},
+    )
+    id: Optional[str] = Field(
+        default=None,
+        description="Unique note identifier if successfully stored.",
+        json_schema_extra={"example": "550e8400-e29b-41d4-a716-446655440000"},
+    )
+    stored: bool = Field(
+        ...,
+        description="Whether this file's extraction result was persisted.",
+        json_schema_extra={"example": True},
+    )
+    entity_count: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Number of entities extracted from this file.",
+        json_schema_extra={"example": 8},
+    )
+    url: Optional[str] = Field(
+        default=None,
+        description="Relative URL to retrieve the extraction result.",
+        json_schema_extra={"example": "/notes/550e8400-e29b-41d4-a716-446655440000"},
+    )
+    error: Optional[str] = Field(
+        default=None,
+        description="Error message if processing failed for this file.",
+        json_schema_extra={"example": "Missing episode_id for 'nota_002.pdf'"},
+    )
 
 
-# Representa la respuesta completa de un acuse de recibo batch, con una lista de ítems procesados.
 class BatchAckResponse(BaseModel):
-    items: List[BatchAckItem]  # Lista de ítems procesados en el batch.
+    """
+    Complete response for batch extraction requests.
+
+    Returned by the ``POST /extract-batch`` endpoint with processing
+    status for all files in the batch.
+
+    Attributes:
+        items: List of acknowledgments for each processed file.
+
+    Example:
+        >>> response = BatchAckResponse(
+        ...     items=[
+        ...         BatchAckItem(filename="nota_001.pdf", stored=True, entity_count=8),
+        ...         BatchAckItem(filename="nota_002.pdf", stored=False, error="Invalid format"),
+        ...     ]
+        ... )
+    """
+
+    items: List[BatchAckItem] = Field(
+        ...,
+        description="List of processing acknowledgments for each file in the batch.",
+    )

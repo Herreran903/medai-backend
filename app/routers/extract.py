@@ -1,7 +1,48 @@
-# Este archivo define un conjunto de endpoints para un servicio de extracción de entidades
-# desde texto o archivos. Incluye funciones para procesar texto, guardar resultados en una base
-# de datos y manejar lotes de archivos. Utiliza FastAPI para la creación de rutas y MongoDB
-# como base de datos.
+"""
+Clinical Entity Extraction API Router.
+
+This module defines the FastAPI router for clinical Named Entity Recognition (NER)
+endpoints, providing the primary API interface for the MedAI backend.
+
+Architecture Context:
+    The extraction router is the main entry point for clinical NLP operations:
+
+    - Single note extraction (``POST /extract``)
+    - Batch file processing (``POST /extract-batch``)
+    - Result retrieval (``GET /notes/{note_id}``)
+
+    All endpoints integrate with the extraction pipeline, storage layer,
+    and optional UMLS normalization service.
+
+API Design:
+    The API follows REST conventions with multipart/form-data for file uploads:
+
+    - Form fields for parameters (model, episode_id, note_date, etc.)
+    - File upload for document processing
+    - JSON responses with extraction results or acknowledgments
+
+Supported Models:
+    - ``lstm``: BiLSTM-CRF model for fast inference
+    - ``transformer``: Fine-tuned BETO/RoBERTa (variants: beto, roberta)
+    - ``llm``: LLM-based extraction (variants: claude, gpt)
+
+Integration Points:
+    - :mod:`app.services.pipeline`: Extraction orchestration
+    - :mod:`app.services.store`: MongoDB persistence
+    - :mod:`app.services.text_utils`: File format conversion
+    - :mod:`app.deps`: Database and settings injection
+
+Usage:
+    The router is mounted in :mod:`app.main` and exposes endpoints at:
+
+    - ``POST /extract`` - Single note extraction
+    - ``POST /extract-batch`` - Batch processing
+    - ``GET /notes/{note_id}`` - Retrieve stored result
+
+See Also:
+    - :mod:`app.schemas` for request/response models
+    - :mod:`app.services.pipeline` for extraction logic
+"""
 
 import json
 from datetime import datetime
@@ -30,116 +71,234 @@ from app.schemas import (
     ExtractAck,
     ExtractResponse,
 )
-from app.services.store import (
-    save_result,  # Función para guardar resultados en la base de datos
-)
-from app.services.text_utils import read_any_to_text  # Convierte archivos a texto
+from app.services.store import save_result
+from app.services.text_utils import read_any_to_text
 
-# Se define un enrutador para los endpoints de extracción
-router = APIRouter()
+router = APIRouter(
+    tags=["Extraction"],
+    responses={
+        400: {"description": "Invalid request parameters or missing required fields"},
+        404: {"description": "Requested resource not found"},
+        500: {"description": "Internal server error during extraction"},
+    },
+)
+"""
+FastAPI router for extraction endpoints.
+
+All endpoints are tagged with "Extraction" for OpenAPI grouping.
+Common error responses are defined at the router level.
+"""
 
 
 def _extract_from_text(*args, **kwargs):
+    """
+    Lazy import wrapper for extraction pipeline.
+
+    Defers import of the pipeline module to avoid circular dependencies
+    and reduce startup time by delaying model loading.
+
+    Returns:
+        Result from :func:`app.services.pipeline.extract_from_text`.
+    """
     from app.services.pipeline import extract_from_text
 
     return extract_from_text(*args, **kwargs)
 
 
-# Función auxiliar para analizar fechas en formato ISO 8601
 def _parse_iso8601(dt: Optional[str]) -> Optional[datetime]:
     """
-    Convierte una cadena en formato ISO 8601 a un objeto datetime.
-    Si el formato es inválido, lanza una excepción HTTP 400.
+    Parse ISO 8601 date string to datetime object.
+
+    Handles various ISO 8601 formats including:
+
+    - Full datetime: ``2024-01-15T10:30:00``
+    - With timezone: ``2024-01-15T10:30:00Z`` or ``2024-01-15T10:30:00+00:00``
+    - Date only: ``2024-01-15`` (assumes midnight)
+
+    Args:
+        dt: ISO 8601 formatted date string, or None.
+
+    Returns:
+        Parsed datetime object, or None if input is None/empty.
+
+    Raises:
+        HTTPException: 400 error if date format is invalid.
     """
     if not dt:
         return None
     s = dt.strip()
-    if s.endswith("Z"):  # Ajusta el formato UTC si termina en 'Z'
+    if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     try:
         return datetime.fromisoformat(s)
     except ValueError:
         try:
-            # Intenta agregar una hora por defecto si solo se proporciona la fecha
             return datetime.fromisoformat(s + "T00:00:00")
         except Exception:
-            raise HTTPException(status_code=400, detail="Formato de note_date inválido")
+            raise HTTPException(status_code=400, detail="Invalid note_date format")
 
 
-# Función auxiliar para convertir una cadena CSV en una lista de cadenas
 def _parse_csv(v: Optional[str]) -> List[str]:
     """
-    Convierte una cadena CSV en una lista de cadenas, eliminando espacios en blanco.
+    Parse comma-separated string to list.
+
+    Args:
+        v: Comma-separated string (e.g., "SNOMEDCT_US,ICD10CM").
+
+    Returns:
+        List of trimmed non-empty strings.
+
+    Example:
+        >>> _parse_csv("SNOMEDCT_US, ICD10CM")
+        ['SNOMEDCT_US', 'ICD10CM']
     """
     if not v:
         return []
     return [p.strip() for p in v.split(",") if p.strip()]
 
 
-# Endpoint para extraer entidades desde texto o archivos
-@router.post("/extract", response_model=ExtractAck, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/extract",
+    response_model=ExtractAck,
+    status_code=status.HTTP_201_CREATED,
+    summary="Extract clinical entities from text or file",
+    description="""
+Extract clinical Named Entities from a single clinical note using the specified NER model.
+
+**Business Purpose:**
+This endpoint processes individual clinical notes (text or uploaded files) to identify
+and extract medical entities such as diagnoses, vital signs, ventilation parameters,
+and laboratory values. Results are persisted to MongoDB for later retrieval.
+
+**Usage Context:**
+- Frontend single-note analysis workflow
+- Real-time clinical decision support integration
+- Manual note processing by clinical staff
+
+**Supported File Formats:**
+- Plain text (.txt)
+- PDF documents (.pdf)
+- Word documents (.docx)
+
+**Model Selection:**
+- `lstm`: Fast inference, moderate accuracy
+- `transformer`: Best accuracy (variants: `beto`, `roberta`)
+- `llm`: Highest flexibility (variants: `claude`, `gpt`)
+
+**Normalization:**
+When `normalize=true`, extracted diagnosis entities (DX) are linked to
+SNOMED-CT and ICD-10 codes via UMLS lookup.
+""",
+    response_description="Acknowledgment with note ID and optional full result",
+)
 async def extract(
-    text: Optional[str] = Form(None),  # Texto proporcionado directamente
-    file: Optional[UploadFile] = File(None),  # Archivo cargado por el usuario
-    model: str = Form(...),  # Modelo de extracción a utilizar (lstm, transformer, llm)
+    text: Optional[str] = Form(
+        None,
+        description="Clinical note text content. Either `text` or `file` must be provided.",
+    ),
+    file: Optional[UploadFile] = File(
+        None,
+        description="Clinical note file (PDF, DOCX, or TXT). Either `text` or `file` must be provided.",
+    ),
+    model: str = Form(
+        ...,
+        description="Extraction model identifier: `lstm`, `transformer`, or `llm`.",
+    ),
     model_variant: Optional[str] = Form(
-        None
-    ),  # Variante del modelo (claude/gpt/local para llm, beto/roberta para transformer)
-    episode_id: Optional[str] = Form(None),  # ID del episodio asociado
-    note_date: Optional[str] = Form(None),  # Fecha de la nota en formato ISO 8601
-    save: Optional[bool] = Form(True),  # Indica si se debe guardar el resultado
-    normalize: Optional[bool] = Form(False),  # Normalización de entidades
-    systems_csv: Optional[str] = Form(None),  # Sistemas específicos en formato CSV
-    restrict_types_csv: Optional[str] = Form(None),  # Tipos de entidades a restringir
-    expand: Optional[bool] = Form(False),  # Expande el resultado completo
-    db: Database = Depends(get_db),  # Dependencia para obtener la base de datos
-    settings: Settings = Depends(settings_dep),  # Configuración global
+        None,
+        description="Model variant: `beto`/`roberta` for transformer, `claude`/`gpt` for llm.",
+    ),
+    episode_id: Optional[str] = Form(
+        None,
+        description="Clinical episode identifier for grouping related notes. Required for storage.",
+    ),
+    note_date: Optional[str] = Form(
+        None,
+        description="ISO 8601 date of the clinical note (e.g., `2024-01-15T10:30:00`). Required for storage.",
+    ),
+    save: Optional[bool] = Form(
+        True,
+        description="Whether to persist extraction results to MongoDB.",
+    ),
+    normalize: Optional[bool] = Form(
+        False,
+        description="Whether to normalize DX entities to SNOMED-CT/ICD-10 codes via UMLS.",
+    ),
+    systems_csv: Optional[str] = Form(
+        None,
+        description="Comma-separated target coding systems for normalization (e.g., `SNOMEDCT_US,ICD10CM`).",
+    ),
+    restrict_types_csv: Optional[str] = Form(
+        None,
+        description="Comma-separated entity types to include in normalization (e.g., `DX`).",
+    ),
+    expand: Optional[bool] = Form(
+        False,
+        description="Whether to include full extraction result in response.",
+    ),
+    db: Database = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
 ):
     """
-    Procesa texto o archivos para extraer entidades usando un modelo específico.
-    Guarda los resultados si está habilitado y devuelve un resumen de la operación.
+    Extract clinical entities from a single note.
+
+    This endpoint accepts either raw text or an uploaded file, processes it
+    through the specified NER model, optionally normalizes entities to
+    standard medical codes, and persists the result to MongoDB.
+
+    Args:
+        text: Raw clinical note text.
+        file: Uploaded file (PDF, DOCX, TXT).
+        model: Extraction model (lstm, transformer, llm).
+        model_variant: Model variant for transformer/llm.
+        episode_id: Clinical episode identifier (required).
+        note_date: Note date in ISO 8601 format (required).
+        save: Whether to persist results.
+        normalize: Whether to apply UMLS normalization.
+        systems_csv: Target coding systems for normalization.
+        restrict_types_csv: Entity types to normalize.
+        expand: Include full result in response.
+        db: MongoDB database (injected).
+        settings: Application settings (injected).
+
+    Returns:
+        ExtractAck: Acknowledgment with note ID and metadata.
+
+    Raises:
+        HTTPException: 400 if neither text nor file provided, or missing required fields.
     """
     if not text and not file:
-        # Verifica que se proporcione al menos texto o un archivo
-        raise HTTPException(status_code=400, detail="Proporciona 'text' o 'file'")
+        raise HTTPException(status_code=400, detail="Provide either 'text' or 'file'")
 
     if file:
-        # Convierte el contenido del archivo a texto
         content = await file.read()
         text = read_any_to_text(file.filename, content)
 
-    # Convierte las cadenas CSV en listas
     systems = _parse_csv(systems_csv)
     restrict_types = _parse_csv(restrict_types_csv)
 
-    # Analiza y valida la fecha de la nota
     note_dt = _parse_iso8601(note_date)
     note_date_iso = note_dt.isoformat() if note_dt else None
 
-    # Llama al servicio de extracción de texto con los parámetros proporcionados
     res = _extract_from_text(
         text or "",
         model=model or settings.default_model,
-        model_variant=model_variant,  # Pasa la variante del modelo
+        model_variant=model_variant,
         normalize=bool(normalize),
         systems=systems,
         restrict_types=restrict_types or None,
     )
 
-    # Verifica que se proporcione un ID de episodio
     if not episode_id:
-        raise HTTPException(status_code=400, detail="Falta 'episode_id'")
-    # Verifica que la fecha sea válida
+        raise HTTPException(status_code=400, detail="Missing 'episode_id'")
     if not note_date_iso:
         raise HTTPException(
-            status_code=400, detail="Falta 'note_date' o formato inválido"
+            status_code=400, detail="Missing 'note_date' or invalid format"
         )
 
-    # Inicializa variables para el almacenamiento
     note_id = None
     stored = False
     if save and settings.save_results:
-        # Guarda el resultado en la base de datos si está habilitado
         note_id = save_result(
             db=db,
             payload=text or "",
@@ -149,11 +308,10 @@ async def extract(
             note_date_iso=note_date_iso,
             filename=getattr(file, "filename", None),
             source_system="api.extract",
-            dedupe_by_hash=True,  # Evita duplicados basados en hash
+            dedupe_by_hash=True,
         )
         stored = True
 
-    # Construye la respuesta con los datos procesados
     ack = ExtractAck(
         id=note_id or "",
         stored=stored,
@@ -162,36 +320,109 @@ async def extract(
         episode_id=episode_id,
         note_date=note_date_iso,
         entity_count=len(res.entities) if hasattr(res, "entities") else None,
-        result=(
-            res if expand else None
-        ),  # Incluye el resultado completo si se solicita
+        result=(res if expand else None),
     )
     return ack
 
 
-# Endpoint para procesar múltiples archivos en un solo lote
-@router.post("/extract-batch", response_model=BatchAckResponse)
+@router.post(
+    "/extract-batch",
+    response_model=BatchAckResponse,
+    summary="Extract entities from multiple files",
+    description="""
+Process multiple clinical note files in a single batch request.
+
+**Business Purpose:**
+Enables bulk processing of clinical notes for retrospective analysis,
+data migration, or batch import workflows. Each file is processed
+independently with individual success/failure tracking.
+
+**Usage Context:**
+- Bulk import of historical clinical notes
+- Batch processing jobs from external systems
+- Data migration and ETL pipelines
+
+**Metadata Format:**
+The `notes_meta` parameter accepts a JSON array mapping filenames to metadata:
+
+```json
+[
+    {"filename": "nota_001.pdf", "episode_id": "EP-001", "note_date": "2024-01-15"},
+    {"filename": "nota_002.pdf", "episode_id": "EP-002", "note_date": "2024-01-16"}
+]
+```
+
+**Error Handling:**
+Files that fail processing are included in the response with error details.
+Successfully processed files are stored independently.
+""",
+    response_description="Batch acknowledgment with per-file status",
+)
 async def extract_batch(
-    files: List[UploadFile] = File(...),  # Lista de archivos cargados
-    model: str = Form(...),  # Modelo de extracción a utilizar
-    model_variant: Optional[str] = Form(None),  # Variante del modelo
-    save: Optional[bool] = Form(True),  # Indica si se deben guardar los resultados
-    normalize: Optional[bool] = Form(False),  # Normalización de entidades
-    systems_csv: Optional[str] = Form(None),  # Sistemas específicos en formato CSV
-    restrict_types_csv: Optional[str] = Form(None),  # Tipos de entidades a restringir
-    notes_meta: Optional[str] = Form(None),  # JSON con metadatos por archivo
-    db: Database = Depends(get_db),  # Dependencia para obtener la base de datos
-    settings: Settings = Depends(settings_dep),  # Configuración global
+    files: List[UploadFile] = File(
+        ...,
+        description="List of clinical note files to process (PDF, DOCX, TXT).",
+    ),
+    model: str = Form(
+        ...,
+        description="Extraction model identifier: `lstm`, `transformer`, or `llm`.",
+    ),
+    model_variant: Optional[str] = Form(
+        None,
+        description="Model variant: `beto`/`roberta` for transformer, `claude`/`gpt` for llm.",
+    ),
+    save: Optional[bool] = Form(
+        True,
+        description="Whether to persist extraction results to MongoDB.",
+    ),
+    normalize: Optional[bool] = Form(
+        False,
+        description="Whether to normalize DX entities to SNOMED-CT/ICD-10 codes.",
+    ),
+    systems_csv: Optional[str] = Form(
+        None,
+        description="Comma-separated target coding systems for normalization.",
+    ),
+    restrict_types_csv: Optional[str] = Form(
+        None,
+        description="Comma-separated entity types to include in normalization.",
+    ),
+    notes_meta: Optional[str] = Form(
+        None,
+        description="JSON array with per-file metadata (filename, episode_id, note_date).",
+    ),
+    db: Database = Depends(get_db),
+    settings: Settings = Depends(settings_dep),
 ):
     """
-    Procesa un lote de archivos para extraer entidades usando un modelo específico.
-    Devuelve un resumen de la operación para cada archivo.
+    Process multiple files for entity extraction.
+
+    Each file is processed independently through the extraction pipeline.
+    Metadata (episode_id, note_date) must be provided via the notes_meta
+    JSON parameter for each file.
+
+    Args:
+        files: List of uploaded files.
+        model: Extraction model identifier.
+        model_variant: Model variant for transformer/llm.
+        save: Whether to persist results.
+        normalize: Whether to apply UMLS normalization.
+        systems_csv: Target coding systems.
+        restrict_types_csv: Entity types to normalize.
+        notes_meta: JSON array with per-file metadata.
+        db: MongoDB database (injected).
+        settings: Application settings (injected).
+
+    Returns:
+        BatchAckResponse: List of per-file acknowledgments.
+
+    Note:
+        Files without matching metadata in notes_meta will fail with an error.
     """
-    # Convierte las cadenas CSV en listas
     systems = _parse_csv(systems_csv)
     restrict_types = _parse_csv(restrict_types_csv)
 
-    # Parseo de metadatos por archivo (notes_meta: JSON con filename, episode_id, note_date)
+    # Parse per-file metadata
     meta_by_filename: Dict[str, Dict[str, Optional[str]]] = {}
     if notes_meta:
         try:
@@ -206,19 +437,14 @@ async def extract_batch(
                                 "note_date": m.get("note_date") or None,
                             }
         except Exception:
-            # Si el JSON viene inválido, continuamos sin metadatos
             meta_by_filename = {}
 
-    items: List[BatchAckItem] = (
-        []
-    )  # Lista para almacenar los resultados de cada archivo
+    items: List[BatchAckItem] = []
     for f in files:
         try:
-            # Convierte el contenido del archivo a texto
             content = await f.read()
             text = read_any_to_text(f.filename, content)
 
-            # Metadatos por archivo (obligatorios para comportarse como /extract)
             meta = meta_by_filename.get(f.filename, {})
             episode_id = meta.get("episode_id")
             note_date_raw = meta.get("note_date")
@@ -226,13 +452,12 @@ async def extract_batch(
             note_date_iso = note_dt.isoformat() if note_dt else None
 
             if not episode_id:
-                raise ValueError(f"Falta 'episode_id' para '{f.filename}'")
+                raise ValueError(f"Missing 'episode_id' for '{f.filename}'")
             if not note_date_iso:
                 raise ValueError(
-                    f"Falta 'note_date' o formato inválido para '{f.filename}'"
+                    f"Missing 'note_date' or invalid format for '{f.filename}'"
                 )
 
-            # Llama al servicio de extracción de texto
             res = _extract_from_text(
                 text,
                 model=model or settings.default_model,
@@ -245,7 +470,6 @@ async def extract_batch(
             note_id = None
             stored = False
             if save and settings.save_results:
-                # Guarda el resultado en la base de datos si está habilitado
                 note_id = save_result(
                     db=db,
                     payload=text,
@@ -259,7 +483,6 @@ async def extract_batch(
                 )
                 stored = True
 
-            # Agrega el resultado exitoso a la lista
             items.append(
                 BatchAckItem(
                     filename=f.filename,
@@ -272,7 +495,6 @@ async def extract_batch(
                 )
             )
         except Exception as e:
-            # Maneja errores y agrega el resultado fallido a la lista
             items.append(
                 BatchAckItem(
                     filename=f.filename,
@@ -283,37 +505,70 @@ async def extract_batch(
     return BatchAckResponse(items=items)
 
 
-# Endpoint para recuperar una nota específica desde la base de datos
-@router.get("/notes/{note_id}", response_model=ExtractResponse)
+@router.get(
+    "/notes/{note_id}",
+    response_model=ExtractResponse,
+    summary="Retrieve stored extraction result",
+    description="""
+Retrieve a previously stored extraction result by its unique note identifier.
+
+**Business Purpose:**
+Enables retrieval of extraction results for display in the frontend,
+integration with downstream systems, or audit purposes.
+
+**Usage Context:**
+- Frontend note detail view
+- API integration for external systems
+- Audit and compliance verification
+
+**Response Content:**
+Returns the complete extraction result including:
+- Original text content
+- All extracted entities with types and spans
+- Extraction metadata (model, normalization status)
+""",
+    response_description="Complete extraction result with text, entities, and metadata",
+    responses={
+        404: {"description": "Note not found with the specified ID"},
+    },
+)
 async def get_note(
     note_id: str = Path(
-        ..., description="UUID de la nota (note_id)"
-    ),  # ID único de la nota
-    db: Database = Depends(get_db),  # Dependencia para obtener la base de datos
+        ...,
+        description="Unique note identifier (UUID format) returned from extraction endpoints.",
+    ),
+    db: Database = Depends(get_db),
 ):
     """
-    Recupera una nota específica desde la base de datos usando su ID único.
-    Devuelve el texto, las entidades y los metadatos asociados.
+    Retrieve a stored extraction result.
+
+    Queries MongoDB for the note with the specified ID and returns
+    the complete extraction result including text, entities, and metadata.
+
+    Args:
+        note_id: UUID of the note to retrieve.
+        db: MongoDB database (injected).
+
+    Returns:
+        ExtractResponse: Complete extraction result.
+
+    Raises:
+        HTTPException: 404 if note not found.
     """
-    # Busca la nota en la colección de episodios
     doc = db.episodes.find_one(
         {"notes.note_id": note_id},
         {
             "_id": 0,
             "notes": {"$elemMatch": {"note_id": note_id}},
-        },  # Filtra solo la nota requerida
+        },
     )
 
     if not doc or not doc.get("notes"):
-        # Lanza una excepción si la nota no se encuentra
-        raise HTTPException(status_code=404, detail="Nota no encontrada")
+        raise HTTPException(status_code=404, detail="Note not found")
 
-    # Extrae la nota y construye la respuesta
     note = doc["notes"][0]
     return ExtractResponse(
         text=note.get("text") or "",
-        entities=[
-            Entity(**e) for e in note.get("entities", [])
-        ],  # Convierte las entidades a objetos
-        meta=note.get("meta") or {},  # Incluye metadatos si están disponibles
+        entities=[Entity(**e) for e in note.get("entities", [])],
+        meta=note.get("meta") or {},
     )

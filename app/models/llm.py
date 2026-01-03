@@ -1,7 +1,69 @@
 """
-LLM Extractor for Clinical Entity Extraction
-Uses Claude Sonnet 4.5 with Structured Outputs (JSON Schema) to extract clinical entities
-from medical text with guaranteed JSON format and comprehensive entity coverage.
+LLM-Based Clinical Entity Extraction Module.
+
+This module implements clinical Named Entity Recognition (NER) using Large Language
+Models (LLMs) with structured output capabilities. It provides extractors for
+Claude (Anthropic) and GPT (OpenAI) with JSON schema validation.
+
+Architecture Context:
+    The LLM extractor serves as an alternative to traditional NER models (LSTM,
+    Transformer) when higher accuracy or flexibility is needed. It leverages
+    the reasoning capabilities of LLMs to identify clinical entities from
+    mechanical ventilation notes.
+
+    The module follows the Strategy pattern with a Facade:
+
+    - :class:`ClaudeLLMExtractor`: Anthropic Claude implementation
+    - :class:`GPTLLMExtractor`: OpenAI GPT implementation
+    - :class:`LocalLLMExtractor`: Stub for future local model support
+    - :class:`LLMExtractor`: Facade that selects the appropriate extractor
+
+Supported Providers:
+    - **Claude** (default): Uses Claude Sonnet 4.5 with system prompt for JSON output
+    - **GPT**: Uses GPT-4o with native structured outputs (JSON schema mode)
+    - **Local**: Placeholder for Ollama/local model integration
+
+Entity Categories:
+    The LLM is prompted to extract entities in these clinical categories:
+
+    - Ventilation configuration (MODO, FIO2, PEEP, FR, VT, etc.)
+    - Ventilation response (SAO2, PP, PMES, PM)
+    - Anthropometrics (EDAD, PESO, TALLA)
+    - Vital signs (TEMP, PA, FC, GLICEMIA)
+    - Arterial blood gases (PH, PACO2, PAO2, PAFI)
+    - Diagnoses (DX)
+
+Output Format:
+    All extractors return entities in a format compatible with the pipeline::
+
+        [
+            {
+                "type": "FIO2",
+                "text": "60%",
+                "start": 18,
+                "end": 21,
+                "score": 0.95,
+                "code": "60"  # Normalized value
+            }
+        ]
+
+Usage:
+    >>> from app.models.llm import LLMExtractor
+    >>> extractor = LLMExtractor(provider="claude")
+    >>> entities = extractor.predict("Paciente con FiO2 60%, PEEP 8")
+    >>> print(entities)
+    [{"type": "FIO2", "text": "60%", ...}, {"type": "PEEP", "text": "8", ...}]
+
+Configuration:
+    API keys are read from environment variables:
+
+    - ``ANTHROPIC_API_KEY``: Required for Claude provider
+    - ``OPENAI_API_KEY``: Required for GPT provider
+
+See Also:
+    - :mod:`app.services.pipeline` for extraction orchestration
+    - :mod:`app.services.registry` for model registration
+    - :class:`app.schemas.Entity` for output schema
 """
 
 from __future__ import annotations
@@ -14,7 +76,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-# Configuración del logger
+# Logger configuration
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     handler = logging.StreamHandler()
@@ -24,48 +86,80 @@ if not logger.handlers:
 logger.setLevel(logging.INFO)
 
 
-# ============================================================================
-# JSON Schema Definitions for Clinical Entities
-# ============================================================================
+# ==============================================================================
+# JSON Schema Definitions for Structured Output
+# ==============================================================================
 
 
 class ClinicalEntity(BaseModel):
     """
-    Representa una entidad clínica extraída del texto.
-    Compatible con el formato esperado por el pipeline LSTM/Transformer.
+    Pydantic model for LLM-extracted clinical entities.
+
+    This schema is used to validate and structure the JSON output from LLMs,
+    ensuring consistent entity format regardless of the underlying model.
+
+    Attributes:
+        label: Entity type classification matching MedAI taxonomy.
+        value_raw: Exact text as it appears in the source document.
+        value_norm: Normalized numeric value with standard units.
+        units: Standardized unit of measurement.
+        confidence: Model confidence score (0.0 to 1.0).
+        category: Semantic category for entity grouping.
+
+    Note:
+        This schema is converted to JSON Schema for LLM prompting and
+        response validation.
     """
 
     label: str = Field(
-        description="Tipo de entidad clínica (ej: FiO2, PEEP, temperatura)"
+        ...,
+        description="Clinical entity type (e.g., FiO2, PEEP, TEMP, DX).",
     )
-    value_raw: str = Field(description="Valor extraído tal como aparece en el texto")
+    value_raw: str = Field(
+        ...,
+        description="Exact value as it appears in the source text.",
+    )
     value_norm: str = Field(
-        default="", description="Valor normalizado (número + unidad estándar)"
+        default="",
+        description="Normalized value in standard numeric format.",
     )
-    units: str = Field(default="", description="Unidades de medida normalizadas")
+    units: str = Field(
+        default="",
+        description="Standardized unit of measurement (%, cmH2O, mL, etc.).",
+    )
     confidence: float = Field(
-        default=0.95, ge=0.0, le=1.0, description="Confianza de la extracción (0-1)"
+        default=0.95,
+        ge=0.0,
+        le=1.0,
+        description="Extraction confidence score (0.0-1.0).",
     )
     category: str = Field(
-        description="Categoría de la entidad (ej: ventilacion, signos_vitales)"
+        ...,
+        description="Semantic category (ventilacion, signos_vitales, etc.).",
     )
 
 
 class ClinicalEntitiesResponse(BaseModel):
     """
-    Respuesta estructurada que contiene todas las entidades clínicas extraídas.
+    Structured response containing all extracted clinical entities.
+
+    This is the top-level schema for LLM JSON output validation.
+
+    Attributes:
+        entities: List of extracted clinical entities.
     """
 
     entities: List[ClinicalEntity] = Field(
-        default_factory=list, description="Lista de entidades clínicas extraídas"
+        default_factory=list,
+        description="List of clinical entities extracted from the text.",
     )
 
 
-# ============================================================================
-# Entity Categories and Labels Mapping
-# ============================================================================
+# ==============================================================================
+# Entity Category Mappings
+# ==============================================================================
 
-ENTITY_CATEGORIES = {
+ENTITY_CATEGORIES: Dict[str, List[str]] = {
     "ventilacion": ["MODO", "FIO2", "PEEP", "FR", "VT", "FLUJO", "I_E", "SENS"],
     "respuesta_ventilacion": ["SAO2", "PP", "PMES", "PM"],
     "antropometricos": ["EDAD", "PESO", "TALLA"],
@@ -73,17 +167,26 @@ ENTITY_CATEGORIES = {
     "observaciones": ["DX"],
     "gases_arteriales": ["PH", "PACO2", "HCO3", "BE", "PAO2", "PAFI"],
 }
+"""
+Mapping of semantic categories to entity labels.
 
-# Mapeo inverso: label -> category
-LABEL_TO_CATEGORY = {}
+Used for:
+- Organizing extraction prompts by clinical domain
+- Validating extracted entity types
+- Grouping entities in output
+"""
+
+LABEL_TO_CATEGORY: Dict[str, str] = {}
+"""Reverse mapping from entity label to category."""
+
 for category, labels in ENTITY_CATEGORIES.items():
     for label in labels:
         LABEL_TO_CATEGORY[label] = category
 
 
-# ============================================================================
-# Prompt Template for Claude
-# ============================================================================
+# ==============================================================================
+# Extraction Prompt Template
+# ==============================================================================
 
 EXTRACTION_PROMPT = """Eres un experto en extracción de entidades clínicas de notas médicas de pacientes en ventilación mecánica.
 
@@ -144,28 +247,67 @@ Texto a analizar:
 {text}
 
 Extrae las entidades en formato JSON estructurado."""
+"""
+Prompt template for clinical entity extraction.
+
+The prompt instructs the LLM to:
+1. Extract only explicitly mentioned entities
+2. Preserve raw text values
+3. Normalize values to standard formats
+4. Assign confidence scores
+5. Return structured JSON output
+
+The ``{text}`` placeholder is replaced with the input clinical note.
+"""
 
 
-# ============================================================================
-# LLM Extractors
-# ============================================================================
+# ==============================================================================
+# Claude LLM Extractor
+# ==============================================================================
 
 
 class ClaudeLLMExtractor:
     """
-    Extractor de entidades clínicas usando Claude Sonnet 4.5 con Structured Outputs.
-    Garantiza respuestas en formato JSON válido con schema validation.
+    Clinical entity extractor using Anthropic Claude.
+
+    This extractor uses Claude Sonnet 4.5 with a system prompt that enforces
+    JSON output conforming to the :class:`ClinicalEntitiesResponse` schema.
+
+    Architecture:
+        Claude does not natively support JSON schema mode in the same way as
+        OpenAI, so this implementation uses a detailed system prompt with
+        the JSON schema embedded to guide output format.
+
+    Attributes:
+        api_key: Anthropic API key for authentication.
+        model: Claude model identifier (default: claude-sonnet-4-20250514).
+        client: Anthropic client instance (lazy-initialized).
+
+    Example:
+        >>> extractor = ClaudeLLMExtractor()
+        >>> entities = extractor.predict("FiO2 60%, PEEP 8 cmH2O")
+        >>> print(entities[0]["type"])
+        'FIO2'
+
+    Note:
+        Requires the ``anthropic`` package and valid API key.
     """
 
     def __init__(
-        self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-20250514"
-    ):
+        self,
+        api_key: Optional[str] = None,
+        model: str = "claude-sonnet-4-20250514",
+    ) -> None:
         """
-        Inicializa el extractor de Claude.
+        Initialize the Claude extractor.
 
         Args:
-            api_key: API key de Anthropic (si no se proporciona, se lee de ANTHROPIC_API_KEY)
-            model: Modelo de Claude a usar (por defecto claude-sonnet-4-20250514)
+            api_key: Anthropic API key. If not provided, reads from
+                ``ANTHROPIC_API_KEY`` environment variable.
+            model: Claude model identifier. Defaults to Claude Sonnet 4.5.
+
+        Raises:
+            Warning logged if API key is not configured.
         """
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.model = model
@@ -177,41 +319,41 @@ class ClaudeLLMExtractor:
 
                 self.client = anthropic.Anthropic(api_key=self.api_key)
                 logger.info(
-                    f"Claude LLM Extractor inicializado con modelo: {self.model}"
+                    "Claude LLM Extractor initialized with model: %s", self.model
                 )
             except ImportError:
                 logger.warning(
-                    "anthropic package no instalado. Instala con: pip install anthropic"
+                    "anthropic package not installed. Install with: pip install anthropic"
                 )
             except Exception as e:
-                logger.error(f"Error inicializando cliente de Anthropic: {e}")
+                logger.error("Error initializing Anthropic client: %s", e)
         else:
             logger.warning(
-                "ANTHROPIC_API_KEY no configurada. El extractor no funcionará."
+                "ANTHROPIC_API_KEY not configured. Extractor will not function."
             )
 
     def _calculate_offsets(self, text: str, entity_text: str) -> tuple[int, int]:
         """
-        Calcula los offsets (start, end) de una entidad en el texto original.
+        Calculate character offsets for an entity in the source text.
+
+        Performs exact match first, then falls back to case-insensitive
+        regex search if exact match fails.
 
         Args:
-            text: Texto completo
-            entity_text: Texto de la entidad a buscar
+            text: Complete source text.
+            entity_text: Entity text span to locate.
 
         Returns:
-            Tupla (start, end) con las posiciones
+            Tuple of (start, end) character positions, or (-1, -1) if not found.
         """
-        # Busca la primera ocurrencia del texto de la entidad
         start = text.find(entity_text)
         if start == -1:
-            # Si no se encuentra exactamente, intenta búsqueda case-insensitive
             pattern = re.escape(entity_text)
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 start = match.start()
                 end = match.end()
             else:
-                # Si aún no se encuentra, retorna posiciones inválidas
                 return (-1, -1)
         else:
             end = start + len(entity_text)
@@ -220,34 +362,46 @@ class ClaudeLLMExtractor:
 
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
-        Extrae entidades clínicas del texto usando Claude con structured outputs.
+        Extract clinical entities from text using Claude.
 
         Args:
-            text: Texto médico del cual extraer entidades
+            text: Clinical note text to process.
 
         Returns:
-            Lista de diccionarios con formato compatible con pipeline LSTM/Transformer:
-            [{"type": str, "text": str, "start": int, "end": int, "score": float, "code": str}]
+            List of entity dictionaries compatible with the pipeline format::
+
+                [
+                    {
+                        "type": str,      # Entity label
+                        "text": str,      # Raw text span
+                        "start": int,     # Character offset start
+                        "end": int,       # Character offset end
+                        "score": float,   # Confidence score
+                        "code": str       # Normalized value
+                    }
+                ]
+
+        Note:
+            Returns empty list if client is not initialized or on error.
         """
         if not self.client:
-            logger.error("Cliente de Claude no inicializado. Retornando lista vacía.")
+            logger.error("Claude client not initialized. Returning empty list.")
             return []
 
         if not text or not text.strip():
             return []
 
         try:
-            # Construye el prompt con el texto
             prompt = EXTRACTION_PROMPT.format(text=text)
             schema = ClinicalEntitiesResponse.model_json_schema()
             response = None
             content = None
 
-            # Usa fallback JSON-only por prompt (Anthropic SDK no soporta response_format)
+            # Use system prompt with JSON schema (Claude SDK doesn't support response_format)
             try:
                 system_msg = (
-                    "Devuelve exclusivamente un JSON válido que cumpla estrictamente con este JSON Schema de Pydantic. "
-                    "No incluyas NINGÚN texto fuera del JSON:\n" + json.dumps(schema)
+                    "Return exclusively valid JSON that strictly conforms to this Pydantic JSON Schema. "
+                    "Do not include ANY text outside the JSON:\n" + json.dumps(schema)
                 )
                 response = self.client.messages.create(
                     model=self.model,
@@ -258,22 +412,20 @@ class ClaudeLLMExtractor:
                 )
                 content = response.content[0].text
             except Exception as e:
-                logger.error(f"Error llamando a Claude: {e}")
+                logger.error("Error calling Claude API: %s", e)
                 return []
 
-            # Intenta validar directamente contra el schema; si falla, intenta recuperar el JSON del texto
+            # Validate response against schema
             try:
                 entities_response = ClinicalEntitiesResponse.model_validate_json(
                     content
                 )
             except Exception:
                 try:
-                    import re as _re
-
-                    # Extrae el primer objeto o arreglo JSON
-                    m = _re.search(r"\{.*\}|\[.*\]", content, _re.DOTALL)
+                    # Attempt to extract JSON from response text
+                    m = re.search(r"\{.*\}|\[.*\]", content, re.DOTALL)
                     if not m:
-                        raise ValueError("No se encontró JSON en la salida del modelo")
+                        raise ValueError("No JSON found in model output")
                     raw_json = m.group(0)
                     if raw_json.lstrip().startswith("["):
                         wrapped = json.dumps({"entities": json.loads(raw_json)})
@@ -285,58 +437,95 @@ class ClaudeLLMExtractor:
                             ClinicalEntitiesResponse.model_validate_json(raw_json)
                         )
                 except Exception as e2:
-                    logger.error(f"Error validando JSON de Claude: {e2}")
+                    logger.error("Error validating Claude JSON output: %s", e2)
                     return []
 
-            # Convierte al formato esperado por el pipeline
+            # Convert to pipeline-compatible format
             result = []
             for entity in entities_response.entities:
-                # Calcula offsets en el texto original
                 start, end = self._calculate_offsets(text, entity.value_raw)
 
-                # Construye el diccionario en formato compatible
                 entity_dict = {
                     "type": entity.label,
                     "text": entity.value_raw,
                     "start": start if start >= 0 else None,
                     "end": end if end >= 0 else None,
                     "score": entity.confidence,
-                    "code": entity.value_norm,  # Usa value_norm como código
+                    "code": entity.value_norm,
                 }
                 result.append(entity_dict)
 
-            logger.info(f"Extraídas {len(result)} entidades clínicas con Claude")
+            logger.info("Extracted %d clinical entities with Claude", len(result))
             return result
 
         except Exception as e:
-            logger.error(f"Error en extracción con Claude: {e}")
+            logger.error("Error in Claude extraction: %s", e)
             return []
 
     def meta(self) -> Dict[str, Any]:
-        """Retorna metadatos del extractor."""
+        """
+        Return extractor metadata for logging and debugging.
+
+        Returns:
+            Dictionary containing extractor configuration and capabilities.
+        """
         return {
             "extractor": "claude",
             "model": self.model,
             "provider": "anthropic",
-            "structured_outputs": False,  # SDK no soporta response_format, usa system prompt
+            "structured_outputs": False,
             "categories": list(ENTITY_CATEGORIES.keys()),
             "total_labels": sum(len(labels) for labels in ENTITY_CATEGORIES.values()),
         }
 
 
+# ==============================================================================
+# GPT LLM Extractor
+# ==============================================================================
+
+
 class GPTLLMExtractor:
     """
-    Extractor de entidades clínicas usando OpenAI GPT con Structured Outputs.
-    Garantiza respuestas en formato JSON válido con schema validation.
+    Clinical entity extractor using OpenAI GPT.
+
+    This extractor uses GPT-4o with native structured outputs (JSON schema mode)
+    for guaranteed valid JSON responses.
+
+    Architecture:
+        GPT-4o supports ``response_format`` with JSON schema validation,
+        ensuring the output always conforms to the expected structure.
+        This provides more reliable parsing than prompt-based approaches.
+
+    Attributes:
+        api_key: OpenAI API key for authentication.
+        model: GPT model identifier (default: gpt-4o-2024-08-06).
+        client: OpenAI client instance (lazy-initialized).
+
+    Example:
+        >>> extractor = GPTLLMExtractor()
+        >>> entities = extractor.predict("Temperatura 38.5°C, FC 92 lpm")
+        >>> print(entities[0]["type"])
+        'TEMP'
+
+    Note:
+        Requires the ``openai`` package and valid API key.
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-2024-08-06"):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "gpt-4o-2024-08-06",
+    ) -> None:
         """
-        Inicializa el extractor de GPT.
+        Initialize the GPT extractor.
 
         Args:
-            api_key: API key de OpenAI (si no se proporciona, se lee de OPENAI_API_KEY)
-            model: Modelo de GPT a usar (por defecto gpt-4o-2024-08-06)
+            api_key: OpenAI API key. If not provided, reads from
+                ``OPENAI_API_KEY`` environment variable.
+            model: GPT model identifier. Defaults to GPT-4o.
+
+        Raises:
+            Warning logged if API key is not configured.
         """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.model = model
@@ -347,38 +536,37 @@ class GPTLLMExtractor:
                 from openai import OpenAI
 
                 self.client = OpenAI(api_key=self.api_key)
-                logger.info(f"GPT LLM Extractor inicializado con modelo: {self.model}")
+                logger.info("GPT LLM Extractor initialized with model: %s", self.model)
             except ImportError:
                 logger.warning(
-                    "openai package no instalado. Instala con: pip install openai"
+                    "openai package not installed. Install with: pip install openai"
                 )
             except Exception as e:
-                logger.error(f"Error inicializando cliente de OpenAI: {e}")
+                logger.error("Error initializing OpenAI client: %s", e)
         else:
-            logger.warning("OPENAI_API_KEY no configurada. El extractor no funcionará.")
+            logger.warning(
+                "OPENAI_API_KEY not configured. Extractor will not function."
+            )
 
     def _calculate_offsets(self, text: str, entity_text: str) -> tuple[int, int]:
         """
-        Calcula los offsets (start, end) de una entidad en el texto original.
+        Calculate character offsets for an entity in the source text.
 
         Args:
-            text: Texto completo
-            entity_text: Texto de la entidad a buscar
+            text: Complete source text.
+            entity_text: Entity text span to locate.
 
         Returns:
-            Tupla (start, end) con las posiciones
+            Tuple of (start, end) character positions, or (-1, -1) if not found.
         """
-        # Busca la primera ocurrencia del texto de la entidad
         start = text.find(entity_text)
         if start == -1:
-            # Si no se encuentra exactamente, intenta búsqueda case-insensitive
             pattern = re.escape(entity_text)
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 start = match.start()
                 end = match.end()
             else:
-                # Si aún no se encuentra, retorna posiciones inválidas
                 return (-1, -1)
         else:
             end = start + len(entity_text)
@@ -387,48 +575,48 @@ class GPTLLMExtractor:
 
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
-        Extrae entidades clínicas del texto usando GPT con structured outputs.
+        Extract clinical entities from text using GPT.
+
+        Uses OpenAI's structured outputs feature for guaranteed JSON schema
+        compliance.
 
         Args:
-            text: Texto médico del cual extraer entidades
+            text: Clinical note text to process.
 
         Returns:
-            Lista de diccionarios con formato compatible con pipeline LSTM/Transformer:
-            [{"type": str, "text": str, "start": int, "end": int, "score": float, "code": str}]
+            List of entity dictionaries compatible with the pipeline format.
+
+        Note:
+            Falls back to prompt-based JSON if structured outputs fail.
         """
         if not self.client:
-            logger.error("Cliente de OpenAI no inicializado. Retornando lista vacía.")
+            logger.error("OpenAI client not initialized. Returning empty list.")
             return []
 
         if not text or not text.strip():
             return []
 
         try:
-            # Construye el prompt con el texto
             prompt = EXTRACTION_PROMPT.format(text=text)
             schema = ClinicalEntitiesResponse.model_json_schema()
 
-            # Prepara el schema para OpenAI (requiere additionalProperties: false y required completo)
+            # Prepare schema for OpenAI strict mode
             openai_schema = schema.copy()
 
             def fix_schema_for_openai(obj):
-                """Ajusta el schema para cumplir con OpenAI strict mode"""
+                """Adjust schema for OpenAI strict mode requirements."""
                 if isinstance(obj, dict):
-                    # Agrega additionalProperties: false para objetos
                     if "type" in obj and obj["type"] == "object":
                         if "additionalProperties" not in obj:
                             obj["additionalProperties"] = False
-                        # Asegura que required incluya todas las propiedades
                         if "properties" in obj:
                             all_props = list(obj["properties"].keys())
                             if "required" not in obj:
                                 obj["required"] = all_props
                             else:
-                                # Agrega propiedades faltantes a required
                                 for prop in all_props:
                                     if prop not in obj["required"]:
                                         obj["required"].append(prop)
-                    # Recursión
                     for key, value in obj.items():
                         fix_schema_for_openai(value)
                 elif isinstance(obj, list):
@@ -437,14 +625,14 @@ class GPTLLMExtractor:
 
             fix_schema_for_openai(openai_schema)
 
-            # Usa structured outputs de OpenAI
+            # Use structured outputs
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {
                             "role": "system",
-                            "content": "Eres un experto en extracción de entidades clínicas. Devuelve SOLO JSON válido.",
+                            "content": "You are an expert in clinical entity extraction. Return ONLY valid JSON.",
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -461,14 +649,14 @@ class GPTLLMExtractor:
                 )
                 content = response.choices[0].message.content
             except Exception as e:
-                # Fallback sin structured outputs
-                logger.warning(f"Error con structured outputs, usando fallback: {e}")
+                # Fallback without structured outputs
+                logger.warning("Structured outputs failed, using fallback: %s", e)
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {
                             "role": "system",
-                            "content": f"Eres un experto en extracción de entidades clínicas. Devuelve SOLO JSON válido que cumpla con este schema:\n{json.dumps(schema)}",
+                            "content": f"You are an expert in clinical entity extraction. Return ONLY valid JSON conforming to this schema:\n{json.dumps(schema)}",
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -477,17 +665,16 @@ class GPTLLMExtractor:
                 )
                 content = response.choices[0].message.content
 
-            # Intenta validar directamente contra el schema
+            # Validate response
             try:
                 entities_response = ClinicalEntitiesResponse.model_validate_json(
                     content
                 )
             except Exception:
                 try:
-                    # Extrae el primer objeto o arreglo JSON
                     m = re.search(r"\{.*\}|\[.*\]", content, re.DOTALL)
                     if not m:
-                        raise ValueError("No se encontró JSON en la salida del modelo")
+                        raise ValueError("No JSON found in model output")
                     raw_json = m.group(0)
                     if raw_json.lstrip().startswith("["):
                         wrapped = json.dumps({"entities": json.loads(raw_json)})
@@ -499,35 +686,38 @@ class GPTLLMExtractor:
                             ClinicalEntitiesResponse.model_validate_json(raw_json)
                         )
                 except Exception as e2:
-                    logger.error(f"Error validando JSON de GPT: {e2}")
+                    logger.error("Error validating GPT JSON output: %s", e2)
                     return []
 
-            # Convierte al formato esperado por el pipeline
+            # Convert to pipeline-compatible format
             result = []
             for entity in entities_response.entities:
-                # Calcula offsets en el texto original
                 start, end = self._calculate_offsets(text, entity.value_raw)
 
-                # Construye el diccionario en formato compatible
                 entity_dict = {
                     "type": entity.label,
                     "text": entity.value_raw,
                     "start": start if start >= 0 else None,
                     "end": end if end >= 0 else None,
                     "score": entity.confidence,
-                    "code": entity.value_norm,  # Usa value_norm como código
+                    "code": entity.value_norm,
                 }
                 result.append(entity_dict)
 
-            logger.info(f"Extraídas {len(result)} entidades clínicas con GPT")
+            logger.info("Extracted %d clinical entities with GPT", len(result))
             return result
 
         except Exception as e:
-            logger.error(f"Error en extracción con GPT: {e}")
+            logger.error("Error in GPT extraction: %s", e)
             return []
 
     def meta(self) -> Dict[str, Any]:
-        """Retorna metadatos del extractor."""
+        """
+        Return extractor metadata for logging and debugging.
+
+        Returns:
+            Dictionary containing extractor configuration and capabilities.
+        """
         return {
             "extractor": "gpt",
             "model": self.model,
@@ -538,43 +728,65 @@ class GPTLLMExtractor:
         }
 
 
+# ==============================================================================
+# Local LLM Extractor (Stub)
+# ==============================================================================
+
+
 class LocalLLMExtractor:
     """
-    Stub para extractor usando LLM local (ej: Llama, Mistral via Ollama).
-    Implementación futura para modelos locales con structured outputs.
+    Stub extractor for local LLM models (e.g., Llama, Mistral via Ollama).
+
+    This class provides a placeholder for future local model integration,
+    allowing the system to be extended without API dependencies.
+
+    Attributes:
+        model: Local model identifier.
+        base_url: Ollama or compatible server URL.
+
+    Note:
+        This is a stub implementation. The :meth:`predict` method returns
+        an empty list until full implementation is completed.
     """
 
     def __init__(
-        self, model: str = "llama3.1:8b", base_url: str = "http://localhost:11434"
-    ):
+        self,
+        model: str = "llama3.1:8b",
+        base_url: str = "http://localhost:11434",
+    ) -> None:
         """
-        Inicializa el extractor de LLM local (stub).
+        Initialize the local LLM extractor stub.
 
         Args:
-            model: Nombre del modelo local
-            base_url: URL base del servidor (ej: Ollama)
+            model: Local model name (e.g., "llama3.1:8b").
+            base_url: Ollama server URL.
         """
         self.model = model
         self.base_url = base_url
 
-        logger.info(f"Local LLM Extractor (STUB) inicializado con modelo: {self.model}")
-        logger.warning("Local LLM extractor es un stub. Implementación pendiente.")
+        logger.info("Local LLM Extractor (STUB) initialized with model: %s", self.model)
+        logger.warning("Local LLM extractor is a stub. Implementation pending.")
 
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
-        Stub para extracción con LLM local.
+        Stub prediction method.
 
         Args:
-            text: Texto médico
+            text: Clinical note text (unused in stub).
 
         Returns:
-            Lista vacía (implementación pendiente)
+            Empty list (implementation pending).
         """
-        logger.warning("Local LLM extractor no implementado. Retornando lista vacía.")
+        logger.warning("Local LLM extractor not implemented. Returning empty list.")
         return []
 
     def meta(self) -> Dict[str, Any]:
-        """Retorna metadatos del extractor."""
+        """
+        Return extractor metadata.
+
+        Returns:
+            Dictionary indicating stub status.
+        """
         return {
             "extractor": "local_llm",
             "model": self.model,
@@ -584,15 +796,42 @@ class LocalLLMExtractor:
         }
 
 
-# ============================================================================
-# Main LLMExtractor Class (Facade)
-# ============================================================================
+# ==============================================================================
+# LLM Extractor Facade
+# ==============================================================================
 
 
 class LLMExtractor:
     """
-    Clase principal que actúa como facade para diferentes extractores LLM.
-    Por defecto usa Claude Sonnet 4.5, pero puede configurarse para usar GPT o LLM local.
+    Facade class for LLM-based clinical entity extraction.
+
+    This class provides a unified interface to different LLM providers,
+    selecting the appropriate extractor based on the specified provider.
+
+    The facade pattern simplifies client code by hiding the complexity
+    of provider selection and initialization.
+
+    Supported Providers:
+        - ``claude``: Anthropic Claude (default)
+        - ``gpt``: OpenAI GPT-4o
+        - ``local``: Local models via Ollama (stub)
+
+    Attributes:
+        provider: Selected provider identifier.
+        extractor: Underlying provider-specific extractor instance.
+
+    Example:
+        >>> # Default Claude extractor
+        >>> extractor = LLMExtractor()
+        >>> entities = extractor.predict("FiO2 60%")
+        >>>
+        >>> # Explicit GPT extractor
+        >>> extractor = LLMExtractor(provider="gpt")
+        >>> entities = extractor.predict("PEEP 8 cmH2O")
+
+    See Also:
+        - :class:`ClaudeLLMExtractor` for Claude implementation
+        - :class:`GPTLLMExtractor` for GPT implementation
     """
 
     def __init__(
@@ -601,15 +840,18 @@ class LLMExtractor:
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         **kwargs,
-    ):
+    ) -> None:
         """
-        Inicializa el extractor LLM según el proveedor especificado.
+        Initialize the LLM extractor with the specified provider.
 
         Args:
-            provider: Proveedor del LLM ("claude", "gpt", "local")
-            api_key: API key (si aplica)
-            model: Modelo específico a usar
-            **kwargs: Argumentos adicionales para el extractor
+            provider: LLM provider ("claude", "gpt", "local").
+            api_key: API key for the selected provider.
+            model: Specific model identifier to use.
+            **kwargs: Additional arguments passed to the provider extractor.
+
+        Note:
+            Unknown providers default to Claude with a warning.
         """
         self.provider = provider.lower()
 
@@ -624,31 +866,31 @@ class LLMExtractor:
         elif self.provider == "local":
             self.extractor = LocalLLMExtractor(model=model or "llama3.1:8b", **kwargs)
         else:
-            logger.warning(
-                f"Proveedor desconocido: {provider}. Usando Claude por defecto."
-            )
+            logger.warning("Unknown provider: %s. Using Claude as default.", provider)
             self.extractor = ClaudeLLMExtractor(api_key=api_key)
 
-        logger.info(f"LLMExtractor inicializado con proveedor: {self.provider}")
+        logger.info("LLMExtractor initialized with provider: %s", self.provider)
 
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
-        Extrae entidades clínicas del texto.
+        Extract clinical entities from text.
+
+        Delegates to the underlying provider-specific extractor.
 
         Args:
-            text: Texto médico del cual extraer entidades
+            text: Clinical note text to process.
 
         Returns:
-            Lista de diccionarios con entidades en formato compatible con pipeline
+            List of entity dictionaries in pipeline-compatible format.
         """
         return self.extractor.predict(text)
 
     def meta(self) -> Dict[str, Any]:
         """
-        Retorna metadatos del extractor actual.
+        Return metadata from the underlying extractor.
 
         Returns:
-            Diccionario con información del extractor
+            Dictionary with extractor metadata including provider info.
         """
         base_meta = self.extractor.meta()
         base_meta["facade_provider"] = self.provider
