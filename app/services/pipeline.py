@@ -76,6 +76,7 @@ from typing import Any, Dict, List, Optional
 from app.config import get_settings
 from app.models.transformer import TransformerExtractor
 from app.schemas import Entity, ExtractResponse
+
 # from app.services.normalizer import NormOptions, normalize_entities
 from app.services.registry import MODEL_REGISTRY
 
