@@ -1,0 +1,9 @@
+{
+  "max_len": 1497,
+  "pad_id": 0,
+  "n_tags": 57,
+  "formats": {
+    "keras": "model.keras",
+    "saved_model_dir": "saved_model"
+  }
+}

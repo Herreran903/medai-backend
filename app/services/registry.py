@@ -83,7 +83,7 @@ Registered Models:
         scenarios where latency is critical.
         
         - Implementation: :class:`app.models.lstm.LSTMExtractor`
-        - Model files: ``app/models/utils/vmi_enterizacion_ep30_bs32/``
+        - Model files: ``app/models/utils/lstm_model_vmi/``
         
     ``transformer``:
         Fine-tuned Spanish Transformer model (BETO or RoBERTa) for clinical NER.

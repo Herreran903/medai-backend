@@ -76,7 +76,7 @@ from typing import Any, Dict, List, Optional
 from app.config import get_settings
 from app.models.transformer import TransformerExtractor
 from app.schemas import Entity, ExtractResponse
-from app.services.normalizer import NormOptions, normalize_entities
+# from app.services.normalizer import NormOptions, normalize_entities
 from app.services.registry import MODEL_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -287,18 +287,19 @@ def extract_from_text(
         except Exception as exc:
             logger.warning("Invalid entity discarded: %r (error=%s)", e, exc)
 
-    # Optional UMLS normalization
-    if normalize and entities:
-        opts = NormOptions(
-            enabled=True,
-            systems=systems,
-            restrict_types=restrict_types,
-            min_link_score=0.60,
-            max_candidates=25,
-        )
-        ents_dicts = [e.model_dump() for e in entities]
-        ents_norm = normalize_entities(ents_dicts, opts)
-        entities = [Entity(**d) for d in ents_norm]
+    # Optional UMLS normalization (temporarily disabled to avoid extra model loads)
+    # if normalize and entities:
+    #     opts = NormOptions(
+    #         enabled=True,
+    #         systems=systems,
+    #         restrict_types=restrict_types,
+    #         min_link_score=0.60,
+    #         max_candidates=25,
+    #     )
+    #     ents_dicts = [e.model_dump() for e in entities]
+    #     ents_norm = normalize_entities(ents_dicts, opts)
+    #     entities = [Entity(**d) for d in ents_norm]
+    normalize = False
 
     # Build metadata
     meta: Dict[str, Any] = {

@@ -276,6 +276,8 @@ async def extract(
 
     systems = _parse_csv(systems_csv)
     restrict_types = _parse_csv(restrict_types_csv)
+    # Normalization is temporarily disabled to avoid extra model loads.
+    normalize = False
 
     note_dt = _parse_iso8601(note_date)
     note_date_iso = note_dt.isoformat() if note_dt else None
@@ -421,6 +423,8 @@ async def extract_batch(
     """
     systems = _parse_csv(systems_csv)
     restrict_types = _parse_csv(restrict_types_csv)
+    # Normalization is temporarily disabled to avoid extra model loads.
+    normalize = False
 
     # Parse per-file metadata
     meta_by_filename: Dict[str, Dict[str, Optional[str]]] = {}

@@ -51,7 +51,7 @@ Usage:
 
 Configuration:
     The model directory can be specified via constructor or defaults to:
-    ``app/models/utils/vmi_enterizacion_ep30_bs32/``
+    ``app/models/utils/lstm_model_vmi/``
 
 See Also:
     - :mod:`app.services.pipeline` for extraction orchestration
@@ -159,7 +159,7 @@ class LSTMExtractor:
 
         Args:
             model_dir: Path to model directory. If None, uses the default
-                path at ``app/models/utils/vmi_enterizacion_ep30_bs32/``.
+                path at ``app/models/utils/lstm_model_vmi/``.
 
         Raises:
             FileNotFoundError: If the model directory does not exist.
@@ -171,12 +171,12 @@ class LSTMExtractor:
         base_dir = Path(__file__).resolve().parent
 
         # Support both container and local development paths
-        HARD_PATH = Path("/app/app/models/utils/vmi_enterizacion_ep30_bs32")
+        HARD_PATH = Path("/app/app/models/utils/lstm_model_vmi")
 
         default_dir = (
             HARD_PATH
             if HARD_PATH.exists()
-            else (base_dir / "models" / "utils" / "vmi_enterizacion_ep30_bs32")
+            else (base_dir / "models" / "utils" / "lstm_model_vmi")
         )
         resolved = Path(model_dir or default_dir).expanduser().resolve()
         if not resolved.exists():
