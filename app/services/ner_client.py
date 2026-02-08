@@ -33,7 +33,6 @@ See Also:
     - :mod:`shared.schemas` for request/response contracts
 """
 
-import asyncio
 import logging
 from typing import Dict, List, Optional
 

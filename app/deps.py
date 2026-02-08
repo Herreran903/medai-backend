@@ -17,8 +17,6 @@ Key Dependencies:
     - :func:`get_db`: MongoDB database instance (per-request)
     - :func:`get_episode_repository`: Episode repository for data access
     - :func:`get_extraction_service`: Extraction service for business logic
-    - :func:`get_cors_origins`: CORS allowed origins list
-
 Lifecycle Management:
     - MongoDB client is cached at the module level via LRU cache
     - Database instances are yielded per-request for proper resource cleanup
@@ -46,7 +44,7 @@ See Also:
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Generator, Iterable
+from typing import Generator
 
 from fastapi import Depends
 from pymongo import MongoClient
@@ -174,32 +172,6 @@ def get_db(
     """
     db = client[settings.mongodb_db]
     yield db
-
-
-def get_cors_origins(settings: Settings = Depends(settings_dep)) -> Iterable[str]:
-    """
-    Provide CORS allowed origins as a FastAPI dependency.
-
-    This dependency exposes the configured CORS origins list for use
-    in middleware configuration or dynamic CORS handling.
-
-    Args:
-        settings: Application settings (auto-injected via Depends).
-
-    Returns:
-        Iterable[str]: List of allowed origin URLs for CORS.
-
-    Example:
-        >>> @router.get("/cors-config")
-        >>> def get_cors(origins: Iterable[str] = Depends(get_cors_origins)):
-        ...     return {"allowed_origins": list(origins)}
-
-    Note:
-        CORS middleware is typically configured at application startup
-        in :mod:`app.main`. This dependency is provided for cases where
-        dynamic CORS handling is needed.
-    """
-    return settings.cors_origins
 
 
 def get_episode_repository(db: Database = Depends(get_db)):

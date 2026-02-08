@@ -38,7 +38,6 @@ See Also:
     - :mod:`app.services.pipeline` for text processing
 """
 
-import io
 import os
 import re
 import tempfile

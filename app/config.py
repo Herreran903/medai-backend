@@ -71,15 +71,7 @@ class Settings(BaseSettings):
             Must be a key in :data:`app.services.registry.MODEL_REGISTRY`.
         models_enabled: List of model identifiers available for extraction.
             Used for validation and documentation purposes.
-        umls_apikey: API key for UMLS (Unified Medical Language System) access.
-            Required for entity normalization features.
-        anthropic_api_key: Legacy API key for Anthropic Claude integration.
-            Claude is disabled in experiments; retained for compatibility.
         openai_api_key: API key for OpenAI GPT integration (active LLM provider).
-        transformer_beto_model_id: Legacy Hugging Face model identifier for BETO-based
-            NER extraction (not used in current experiments).
-        transformer_beto_peft_model_id: DEPRECATED. Previously used for PEFT/LoRA
-            adapter loading. Retained for configuration compatibility only.
         transformer_roberta_model_id: Hugging Face model identifier for RoBERTa-based
             NER extraction. Points to a fine-tuned Spanish RoBERTa model.
 
@@ -165,29 +157,9 @@ class Settings(BaseSettings):
     - ``llm``: Large Language Model extraction via GPT API (Claude legacy)
     """
 
-    umls_apikey: Optional[str] = Field(
-        default=None,
-        description="UMLS API key for medical entity normalization (SNOMED-CT, ICD-10).",
-    )
-
-    anthropic_api_key: Optional[str] = Field(
-        default=None,
-        description="Legacy Anthropic API key (Claude disabled in experiments).",
-    )
-
     openai_api_key: Optional[str] = Field(
         default=None,
         description="OpenAI API key for GPT-based extraction.",
-    )
-
-    transformer_beto_model_id: Optional[str] = Field(
-        default="NicolasUnivalle/beto-vm-ner-full",
-        description="NOT USED - BETO model disabled. Only RoBERTa is used for experiments.",
-    )
-
-    transformer_beto_peft_model_id: Optional[str] = Field(
-        default="NicolasUnivalle/beto-vm-ner-peft",
-        description="NOT USED - BETO PEFT adapter disabled. Only RoBERTa is used for experiments.",
     )
 
     transformer_roberta_model_id: Optional[str] = Field(

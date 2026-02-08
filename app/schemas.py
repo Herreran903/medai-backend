@@ -44,7 +44,7 @@ See Also:
     - :mod:`app.routers.extract` for API endpoint usage
 """
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
