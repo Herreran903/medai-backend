@@ -247,20 +247,11 @@ Configuration is managed through environment variables. Create a `.env` file bas
 | `NER_LSTM_URL` | BiLSTM service URL | http://ner-bilstm:8002 |
 | `NER_LLM_URL` | LLM service URL | http://ner-llm:8003 |
 
-### Model Configuration
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `TRANSFORMER_BETO_MODEL_ID` | NOT USED - BETO disabled (legacy) | NicolasUnivalle/beto-vm-ner-full |
-| `TRANSFORMER_ROBERTA_MODEL_ID` | RoBERTa model Hugging Face ID (ACTIVE) | NicolasUnivalle/roberta-vm-ner-full |
-
 ### API Keys (optional)
 
 | Variable | Description | Required For |
 |----------|-------------|--------------|
-| `UMLS_APIKEY` | UMLS API key for normalization | Entity normalization (module; gateway disabled) |
-| `ANTHROPIC_API_KEY` | NOT USED - Claude disabled (legacy) | Legacy (Claude) |
-| `OPENAI_API_KEY` | OpenAI API key for GPT | LLM model with GPT |
+| `OPENAI_API_KEY` | OpenAI API key for GPT | LLM model with GPT (configured in ner-llm service) |
 
 ## Model Selection
 
@@ -296,27 +287,6 @@ curl -X POST "http://localhost:8000/extract" \
   -F "episode_id=EP-001" \
   -F "note_date=2024-01-15T10:00:00"
 ```
-
-## Entity Normalization (Currently Disabled in Gateway)
-
-The normalization module can link diagnosis entities to SNOMED-CT and ICD-10 codes, but
-the gateway currently forces `normalize=false` (requests are accepted and ignored).
-
-If/when normalization is re-enabled, use:
-
-```bash
-curl -X POST "http://localhost:8000/extract" \
-  -F "model=transformer" \
-  -F "normalize=true" \
-  -F "systems_csv=SNOMEDCT_US,ICD10CM" \
-  -F "text=Diagnóstico: neumonía adquirida en comunidad" \
-  -F "episode_id=EP-001" \
-  -F "note_date=2024-01-15"
-```
-
-**Requirements (when enabled):**
-- Set `UMLS_APIKEY` environment variable
-- Register for UMLS API access at https://uts.nlm.nih.gov/
 
 ## Testing
 
@@ -358,7 +328,7 @@ This configuration:
 ```bash
 # 1. Configure environment
 cp .env.prod .env.prod.local
-# Edit MONGODB_URI, ANTHROPIC_API_KEY, OPENAI_API_KEY
+# Edit MONGODB_URI and other settings as needed
 
 # 2. Start services
 docker-compose -f docker-compose.prod.yml up --build
@@ -439,7 +409,6 @@ docker-compose -f docker-compose.dev.yml build ner-bilstm
 **Solution**:
 ```bash
 # Configure in .env.dev
-ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
 
 # Restart service
@@ -482,7 +451,6 @@ medai-backend/
 │   └── services/
 │       ├── extraction_service.py   # Business logic layer (Service pattern)
 │       ├── ner_client.py      # NER microservices client
-│       ├── normalizer.py      # UMLS entity normalization
 │       ├── pipeline.py        # Extraction orchestration
 │       ├── registry.py        # Model registry
 │       ├── text_utils.py      # Document text extraction
@@ -508,15 +476,13 @@ medai-backend/
 │           ├── config.py
 │           └── extractor.py
 ├── shared/                    # Shared code between services
-│   ├── schemas.py             # Shared Pydantic models
-│   └── utils.py               # Shared utilities
+│   └── schemas.py             # Shared Pydantic models
 ├── scripts/
 │   └── export_openapi.py      # OpenAPI schema export (multi-service)
 ├── docker-compose.dev.yml     # Development configuration
 ├── docker-compose.prod.yml    # Production configuration
 ├── Dockerfile.gateway         # Gateway container image
-├── requirements.txt           # All gateway dependencies
-├── requirements-gateway.txt   # Minimal gateway dependencies
+├── requirements-gateway.txt   # Gateway dependencies
 └── README.md                  # This file
 ```
 
