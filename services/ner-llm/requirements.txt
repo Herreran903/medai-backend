@@ -1,0 +1,20 @@
+# ==============================================================================
+# MedAI LLM NER Service Dependencies
+# ==============================================================================
+# Lightweight dependencies for LLM-based extraction service.
+# Only includes FastAPI and LLM API clients (no ML frameworks).
+
+# --- Web Framework & API ---
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# --- Data Validation ---
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# --- LLM API Clients ---
+anthropic>=0.39.0  # Claude API client
+openai>=1.0.0      # GPT API client
+
+# NOTE: No ML frameworks (PyTorch, TensorFlow) required.
+# All inference is performed via external API calls.

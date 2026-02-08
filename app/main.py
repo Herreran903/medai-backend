@@ -9,7 +9,8 @@ Architecture Context:
 
     - Clinical Named Entity Recognition (NER) from medical notes
     - Multiple extraction models (LSTM, Transformer, LLM)
-    - Entity normalization to standard medical terminologies (SNOMED-CT, ICD-10)
+    - Entity normalization to standard medical terminologies (SNOMED-CT, ICD-10),
+      currently disabled in the gateway flow
     - Persistent storage of extraction results in MongoDB
 
     The application follows the Factory pattern for testability and supports
@@ -19,7 +20,7 @@ Application Structure:
     - ``/extract``: Single note entity extraction endpoint
     - ``/extract-batch``: Batch processing for multiple files
     - ``/notes/{note_id}``: Retrieve stored extraction results
-    - ``/healthz``: Health check endpoint for container orchestration
+    - ``/health``: Health check endpoint for container orchestration
 
 Startup Sequence:
     1. Load configuration from environment via :mod:`app.config`
@@ -90,7 +91,7 @@ def create_app() -> FastAPI:
         >>> # Use with TestClient for testing
         >>> from fastapi.testclient import TestClient
         >>> client = TestClient(app)
-        >>> response = client.get("/healthz")
+        >>> response = client.get("/health")
         >>> assert response.status_code == 200
 
     Note:
@@ -105,7 +106,8 @@ def create_app() -> FastAPI:
         description=(
             "MedAI Backend API for clinical entity extraction from medical notes. "
             "Supports multiple NER models including LSTM, Transformer (BETO/RoBERTa), "
-            "and LLM-based extraction with optional UMLS normalization."
+            "and LLM-based extraction. UMLS normalization is available but "
+            "currently disabled in the gateway flow."
         ),
         docs_url="/docs",
         redoc_url="/redoc",
@@ -143,22 +145,18 @@ def create_app() -> FastAPI:
         ensure_indexes(db)
 
     @app.get(
-        "/healthz",
+        "/health",
         tags=["Health"],
         summary="Health check endpoint",
         description=(
-            "Returns the application health status. Used by container orchestration "
-            "systems (Kubernetes, Docker Compose) for liveness and readiness probes."
+            "Returns the application health status. Standard health check endpoint "
+            "compatible with load balancers and orchestration systems."
         ),
         response_description="Health status object with 'ok' status on success.",
     )
-    def healthz():
+    def health():
         """
-        Health check endpoint for container orchestration.
-
-        This endpoint provides a simple health check for load balancers
-        and container orchestration systems to verify the application
-        is running and responsive.
+        Health check endpoint.
 
         Returns:
             dict: Health status object with ``status`` field.
@@ -167,10 +165,6 @@ def create_app() -> FastAPI:
             .. code-block:: json
 
                 {"status": "ok"}
-
-        Note:
-            This endpoint does not verify database connectivity.
-            For deep health checks, implement a separate ``/ready`` endpoint.
         """
         return {"status": "ok"}
 

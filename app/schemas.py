@@ -8,17 +8,17 @@ Architecture Context:
     MedAI processes clinical notes to extract medical entities using NLP models.
     The schemas in this module represent:
 
-    - **Domain Objects**: Clinical entities and their associated codes
+    - **Domain Objects**: Clinical entities and their normalized values
     - **API Responses**: Extraction results and acknowledgments
     - **Batch Operations**: Multi-file processing results
 
 Schema Hierarchy:
     .. code-block:: text
 
-        Code
-          └── Entity (contains List[Code])
-                └── ExtractResponse (contains List[Entity])
-                      └── ExtractAck (contains Optional[ExtractResponse])
+        Code (used by normalization module; not returned by the gateway)
+        Entity
+          └── ExtractResponse (contains List[Entity])
+                └── ExtractAck (contains Optional[ExtractResponse])
 
         BatchItem
           └── BatchAckItem
@@ -28,9 +28,9 @@ Domain Model:
     The entity extraction domain follows this conceptual model:
 
     - **Entity**: A span of text identified as a clinical concept (e.g., diagnosis,
-      medication, vital sign) with optional character offsets and confidence score.
-    - **Code**: A standardized medical code (SNOMED-CT, ICD-10) linked to an entity
-      through the UMLS normalization process.
+      medication, vital sign) with optional character offsets and a normalized value.
+    - **Code**: A standardized medical code (SNOMED-CT, ICD-10) produced by the
+      normalization module when enabled.
 
 Usage:
     These schemas are used in FastAPI route definitions for automatic
@@ -63,6 +63,10 @@ class Code(BaseModel):
 
     The code assignment is performed by :mod:`app.services.normalizer` using
     UMLS (Unified Medical Language System) lookups and semantic similarity matching.
+
+    Note:
+        The gateway API does not currently include per-entity ``codes`` lists in
+        responses. Code objects are produced by the normalization module when enabled.
 
     Attributes:
         system: The coding system identifier (vocabulary source).
@@ -120,8 +124,7 @@ class Entity(BaseModel):
     Clinical entity extracted from medical text.
 
     Represents a named entity identified by the NER models, including its
-    type classification, text span, confidence score, and optional
-    standardized codes from medical terminologies.
+    type classification, text span, optional normalized value, and offsets.
 
     Entity Types:
         MedAI recognizes entities specific to mechanical ventilation clinical notes:
@@ -165,22 +168,17 @@ class Entity(BaseModel):
     Attributes:
         type: Entity type classification from the NER model.
         text: Exact text span from the source document.
-        score: Model confidence score for the extraction (0.0 to 1.0).
-        code: Primary normalized code (shorthand for codes[0].code).
+        code: Normalized value extracted from the entity text.
         start: Character offset where entity begins in source text.
         end: Character offset where entity ends in source text.
-        codes: List of normalized medical codes from UMLS lookup.
 
     Example:
         >>> entity = Entity(
-        ...     type="DX",
-        ...     text="neumonía adquirida en comunidad",
-        ...     score=0.95,
-        ...     start=45,
-        ...     end=76,
-        ...     codes=[
-        ...         Code(system="SNOMEDCT_US", code="385093006", display="Community acquired pneumonia")
-        ...     ]
+        ...     type="FIO2",
+        ...     text="FiO2 60%",
+        ...     code="60",
+        ...     start=13,
+        ...     end=21
         ... )
     """
 
@@ -194,17 +192,10 @@ class Entity(BaseModel):
         description="Exact text span extracted from the source document.",
         json_schema_extra={"example": "neumonía adquirida en comunidad"},
     )
-    score: Optional[float] = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="Model confidence score for the extraction (0.0-1.0).",
-        json_schema_extra={"example": 0.95},
-    )
     code: Optional[str] = Field(
         default=None,
-        description="Primary normalized code (shorthand for first code in codes list).",
-        json_schema_extra={"example": "385093006"},
+        description="Normalized value extracted from the entity text.",
+        json_schema_extra={"example": "40"},
     )
     start: Optional[int] = Field(
         default=None,
@@ -217,10 +208,6 @@ class Entity(BaseModel):
         ge=0,
         description="Character offset where entity ends in source text.",
         json_schema_extra={"example": 76},
-    )
-    codes: List[Code] = Field(
-        default_factory=list,
-        description="List of normalized medical codes from UMLS lookup.",
     )
 
 
@@ -239,25 +226,24 @@ class ExtractResponse(BaseModel):
 
     Attributes:
         text: The complete source text that was processed.
-        entities: List of extracted clinical entities with their codes.
+        entities: List of extracted clinical entities with their normalized values.
         meta: Extraction metadata including model info and statistics.
 
     Metadata Fields:
-        The ``meta`` dictionary typically contains:
+        The ``meta`` dictionary contains:
 
-        - ``model``: Extraction model used (lstm, transformer, llm)
-        - ``count``: Number of entities extracted
-        - ``normalized``: Whether UMLS normalization was applied
-        - ``variant``: Model variant (beto, roberta, claude, gpt)
+        - ``model``: Identifier of the model used (e.g., "lstm", "transformer", "llm")
+        - ``inference_time_ms``: Inference time in milliseconds
+        - ``entity_count``: Number of entities extracted
 
     Example:
         >>> response = ExtractResponse(
         ...     text="Paciente con FiO2 60%, PEEP 8 cmH2O",
         ...     entities=[
-        ...         Entity(type="FIO2", text="60%", start=18, end=21),
-        ...         Entity(type="PEEP", text="8 cmH2O", start=28, end=35),
+        ...         Entity(type="FIO2", text="FiO2 60%", code="60", start=14, end=22),
+        ...         Entity(type="PEEP", text="PEEP 8 cmH2O", code="8", start=24, end=37),
         ...     ],
-        ...     meta={"model": "transformer", "count": 2, "normalized": False}
+        ...     meta={"model": "transformer", "inference_time_ms": 120.5, "entity_count": 2}
         ... )
     """
 
@@ -273,7 +259,7 @@ class ExtractResponse(BaseModel):
     meta: Dict[str, Any] = Field(
         default_factory=dict,
         description="Extraction metadata including model info and statistics.",
-        json_schema_extra={"example": {"model": "transformer", "count": 2}},
+        json_schema_extra={"example": {"model": "transformer", "inference_time_ms": 120.5, "entity_count": 2}},
     )
 
 

@@ -1,38 +1,139 @@
-# Docker Compose for local production testing
-# NOTE: Render deployment uses Dockerfile directly, not this compose file
+# ==============================================================================
+# MedAI Microservices - Production Environment
+# ==============================================================================
+# Docker Compose configuration for production deployment with microservices.
+# Uses MongoDB Atlas by default (cloud database).
 #
-# Two modes available:
-# 1. With local MongoDB (default)
-# 2. With MongoDB Atlas (uncomment env_file line)
+# Usage:
+#   docker-compose -f docker-compose.prod.yml up --build
+#
+# For local MongoDB in production (testing):
+#   docker-compose -f docker-compose.prod.yml -f docker-compose.prod.localdb.yml up
+#
+# Services:
+#   - gateway: API Gateway (FastAPI, no ML dependencies)
+#   - ner-transformer: Transformer NER Service (PyTorch + HuggingFace)
+#   - ner-bilstm: BiLSTM NER Service (TensorFlow)
+#   - ner-llm: LLM NER Service (Anthropic/OpenAI clients)
+#   - mongo: MongoDB database (disabled by default, enable with override)
 
 version: "3.8"
 
 services:
-  api:
+  # ===========================================================================
+  # API Gateway
+  # ===========================================================================
+  gateway:
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: medai-api-prod
+      dockerfile: Dockerfile.gateway
+    container_name: medai-gateway-prod
     ports:
       - "8000:8000"
     env_file:
       - .env.prod
-    # depends_on:
-    #   - mongo
+    environment:
+      # Microservices mode enabled
+      - NER_MODE=remote
+
+      # Service URLs (Docker Compose service names)
+      - NER_TRANSFORMER_URL=http://ner-transformer:8001
+      - NER_LSTM_URL=http://ner-bilstm:8002
+      - NER_LLM_URL=http://ner-llm:8003
+
+      # Logging (production level)
+      - LOG_LEVEL=warning
+    depends_on:
+      - ner-transformer
+      - ner-bilstm
+      - ner-llm
+    networks:
+      - medai-network
     restart: unless-stopped
 
-  # mongo:
-  #   image: mongo:6
-  #   container_name: medai-mongo-prod
-  #   restart: unless-stopped
-  #   ports:
-  #     - "27017:27017"
-  #   volumes:
-  #     - mongo_data:/data/db
-  #   environment:
-  #     - MONGO_INITDB_DATABASE=medai
-    # Comment out this service if using MongoDB Atlas
+  # ===========================================================================
+  # NER Transformer Service (BETO/RoBERTa)
+  # ===========================================================================
+  ner-transformer:
+    build:
+      context: .
+      dockerfile: services/ner-transformer/Dockerfile
+    container_name: medai-ner-transformer-prod
+    env_file:
+      - .env.prod
+    environment:
+      - MODEL_VARIANT=beto
+      - LOG_LEVEL=warning
+    volumes:
+      # Cache Hugging Face models to avoid re-downloading
+      - transformer_cache:/root/.cache/huggingface
+      # Mount shared schemas
+      - ./shared:/app/shared:ro
+    networks:
+      - medai-network
+    restart: unless-stopped
+    # No published ports - internal network only
 
-# volumes:
-#   mongo_data:
-#     driver: local
+  # ===========================================================================
+  # NER BiLSTM Service (BiLSTM-CRF)
+  # ===========================================================================
+  ner-bilstm:
+    build:
+      context: .
+      dockerfile: services/ner-bilstm/Dockerfile
+    container_name: medai-ner-bilstm-prod
+    env_file:
+      - .env.prod
+    environment:
+      - MODEL_DIR=/app/models/model
+      - LOG_LEVEL=warning
+    volumes:
+      # Mount shared schemas
+      - ./shared:/app/shared:ro
+    networks:
+      - medai-network
+    restart: unless-stopped
+    # No published ports - internal network only
+
+  # ===========================================================================
+  # NER LLM Service (GPT ONLY - Fixed for experiments)
+  # ===========================================================================
+  ner-llm:
+    build:
+      context: .
+      dockerfile: services/ner-llm/Dockerfile
+    container_name: medai-ner-llm-prod
+    env_file:
+      - .env.prod
+    environment:
+      - LLM_PROVIDER=gpt
+      - LOG_LEVEL=warning
+    volumes:
+      # Mount shared schemas
+      - ./shared:/app/shared:ro
+    networks:
+      - medai-network
+    restart: unless-stopped
+    # No published ports - internal network only
+
+  # ===========================================================================
+  # MongoDB Database (DISABLED by default - use Atlas)
+  # ===========================================================================
+  # To enable local MongoDB, use docker-compose.prod.localdb.yml override:
+  #   docker-compose -f docker-compose.prod.yml -f docker-compose.prod.localdb.yml up
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  medai-network:
+    driver: bridge
+    name: medai-microservices-prod
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  transformer_cache:
+    driver: local
+    name: medai-transformer-cache-prod

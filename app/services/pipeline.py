@@ -12,7 +12,7 @@ Architecture Context:
     - Model selection and initialization
     - Transformer variant resolution (BETO/RoBERTa)
     - Entity validation and standardization
-    - Optional UMLS normalization
+    - Optional terminology normalization (handled downstream; disabled in gateway path)
 
     All API endpoints delegate to this service via :func:`extract_from_text`.
 
@@ -28,7 +28,7 @@ Pipeline Flow:
                  │
                  ▼
         ┌─────────────────┐
-        │   Extraction    │ ← LSTM / Transformer / LLM
+        │   Extraction    │ ← BiLSTM / Transformer / LLM
         └────────┬────────┘
                  │
                  ▼
@@ -38,7 +38,7 @@ Pipeline Flow:
                  │
                  ▼
         ┌─────────────────┐
-        │ Normalization   │ ← Optional UMLS lookup
+        │ Normalization   │ ← Regex value normalization; terminology optional (downstream)
         └────────┬────────┘
                  │
                  ▼
@@ -49,7 +49,7 @@ Model Caching:
 
     - Cache key: ``transformer:{variant}`` (e.g., "transformer:beto")
     - Cache is module-level, persists for application lifetime
-    - LSTM and LLM models use :data:`app.services.registry.MODEL_REGISTRY`
+    - BiLSTM and LLM models use :data:`app.services.registry.MODEL_REGISTRY`
 
 Usage:
     >>> from app.services.pipeline import extract_from_text
@@ -71,88 +71,20 @@ See Also:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from app.config import get_settings
-from app.models.transformer import TransformerExtractor
 from app.schemas import Entity, ExtractResponse
 
 # from app.services.normalizer import NormOptions, normalize_entities
+from app.services.ner_client import NERClient, NERServiceError
 from app.services.registry import MODEL_REGISTRY
+from app.services.utils import extract_normalized_value
 
 logger = logging.getLogger(__name__)
 
-# In-memory cache for Transformer extractors by variant
-_TRANSFORMER_CACHE: Dict[str, TransformerExtractor] = {}
-"""
-Cache for initialized Transformer extractors.
 
-Keys are formatted as ``transformer:{variant}`` where variant is
-"beto" or "roberta". This avoids reloading model weights on each request.
-"""
-
-
-def _resolve_transformer_extractor(
-    model_variant: Optional[str],
-) -> TransformerExtractor:
-    """
-    Resolve and cache a Transformer extractor for the specified variant.
-
-    This function implements lazy initialization with caching for Transformer
-    models, ensuring that model weights are loaded only once per variant.
-
-    Args:
-        model_variant: Transformer variant ("beto" or "roberta").
-            Defaults to "beto" if not specified or invalid.
-
-    Returns:
-        TransformerExtractor: Cached or newly initialized extractor.
-
-    Caching:
-        Extractors are cached by variant in :data:`_TRANSFORMER_CACHE`.
-        The cache persists for the application lifetime.
-
-    Configuration:
-        Model IDs are read from :class:`app.config.Settings`:
-
-        - ``transformer_beto_model_id``: BETO model Hugging Face ID
-        - ``transformer_roberta_model_id``: RoBERTa model Hugging Face ID
-
-    Example:
-        >>> extractor = _resolve_transformer_extractor("roberta")
-        >>> extractor.variant
-        'roberta'
-    """
-    # Normalize variant with BETO as default (backward compatible)
-    variant = (model_variant or "beto").strip().lower()
-    if variant not in {"beto", "roberta"}:
-        logger.warning(
-            "Unknown transformer variant '%s', defaulting to 'beto'",
-            variant,
-        )
-        variant = "beto"
-
-    cache_key = f"transformer:{variant}"
-    if cache_key in _TRANSFORMER_CACHE:
-        return _TRANSFORMER_CACHE[cache_key]
-
-    settings = get_settings()
-    if variant == "roberta":
-        model_id = settings.transformer_roberta_model_id
-    else:
-        model_id = settings.transformer_beto_model_id
-
-    logger.info(
-        "Initializing TransformerExtractor: variant=%s model_id=%s",
-        variant,
-        model_id,
-    )
-    extractor = TransformerExtractor(model_id=model_id)
-    _TRANSFORMER_CACHE[cache_key] = extractor
-    return extractor
-
-
-def extract_from_text(
+async def extract_from_text(
     text: str,
     model: str,
     *,
@@ -184,8 +116,8 @@ def extract_from_text(
             - For ``llm``: "claude" (default) or "gpt"
             - Ignored for ``lstm``
 
-        normalize: Whether to apply UMLS normalization to DX entities.
-            Requires ``UMLS_APIKEY`` environment variable.
+        normalize: Whether to request terminology normalization from the NER service.
+            Note: the gateway service layer currently forces this to False.
         systems: Target terminology systems for normalization
             (e.g., ["SNOMEDCT_US", "ICD10CM"]).
         restrict_types: Entity types to include in normalization
@@ -196,7 +128,7 @@ def extract_from_text(
 
         - ``text``: Original input text
         - ``entities``: List of extracted :class:`Entity` objects
-        - ``meta``: Extraction metadata (model, count, normalized flag)
+        - ``meta``: Extraction metadata (model, inference_time_ms, entity_count)
 
     Raises:
         ValueError: If the specified model is not in MODEL_REGISTRY.
@@ -207,7 +139,7 @@ def extract_from_text(
         2. **Model Resolution**: Select extractor from registry or cache
         3. **Extraction**: Call model's ``predict()`` method
         4. **Entity Validation**: Validate spans and construct Entity objects
-        5. **Normalization**: Optional UMLS code assignment
+        5. **Normalization**: Regex value normalization; optional terminology normalization downstream
         6. **Response Construction**: Build ExtractResponse with metadata
 
     Example:
@@ -226,12 +158,10 @@ def extract_from_text(
         ...     normalize=True,
         ...     systems=["SNOMEDCT_US"]
         ... )
-        >>> result.entities[0].codes[0].system
-        'SNOMEDCT_US'
 
     Note:
         Model loading occurs on first use. Transformer models are cached
-        for subsequent requests. LSTM and LLM models are initialized
+        for subsequent requests. BiLSTM and LLM models are initialized
         at application startup via MODEL_REGISTRY.
     """
     # Input validation: ensure text is always a string
@@ -243,79 +173,41 @@ def extract_from_text(
     if model not in MODEL_REGISTRY:
         raise ValueError(f"Unsupported model: {model}")
 
-    logger.info("Using extraction model: %s (variant=%s)", model, model_variant)
+    logger.info("Using extraction model: %s (variant=%s) [microservices mode]", model, model_variant)
 
-    # Model selection with variant handling for Transformer
-    if model == "transformer":
-        extractor = _resolve_transformer_extractor(model_variant)
-    else:
-        # Use global registry for LSTM and LLM
-        extractor = MODEL_REGISTRY[model]
-        # Support both instances and factory callables
-        if callable(extractor) and not hasattr(extractor, "predict"):
-            extractor = extractor()
-            MODEL_REGISTRY[model] = extractor
+    settings = get_settings()
 
-    # Execute extraction with error handling
+    # Microservices mode: Call HTTP service
     try:
-        raw_entities = extractor.predict(text)
-    except Exception as exc:
-        logger.exception("Error executing predict() on extractor '%s'", model)
-        raise RuntimeError("Internal model extraction failure") from exc
-
-    # Validate and construct Entity objects
-    entities: List[Entity] = []
-    for item in raw_entities or []:
-        if not isinstance(item, dict):
-            logger.warning("Ignoring non-dict entity: %r", type(item))
-            continue
-
-        e = dict(item)  # Copy to avoid mutation
-        s, end = e.get("start"), e.get("end")
-        if s is not None and end is not None:
-            # Validate span bounds
-            if not (0 <= s < end <= len(text)):
-                logger.warning(
-                    "Invalid span, discarding offsets (start=%s, end=%s, len=%s)",
-                    s,
-                    end,
-                    len(text),
-                )
-                e = {k: v for k, v in e.items() if k not in ("start", "end")}
-
-        try:
-            entities.append(Entity(**e))
-        except Exception as exc:
-            logger.warning("Invalid entity discarded: %r (error=%s)", e, exc)
-
-    # Optional UMLS normalization (temporarily disabled to avoid extra model loads)
-    # if normalize and entities:
-    #     opts = NormOptions(
-    #         enabled=True,
-    #         systems=systems,
-    #         restrict_types=restrict_types,
-    #         min_link_score=0.60,
-    #         max_candidates=25,
-    #     )
-    #     ents_dicts = [e.model_dump() for e in entities]
-    #     ents_norm = normalize_entities(ents_dicts, opts)
-    #     entities = [Entity(**d) for d in ents_norm]
-    normalize = False
-
-    # Build metadata
-    meta: Dict[str, Any] = {
-        "model": model,
-        "count": len(entities),
-        "normalized": bool(normalize),
-    }
-
-    # Include extractor metadata if available
-    if hasattr(extractor, "meta"):
-        try:
-            meta.update(extractor.meta())
-        except Exception:
-            logger.debug(
-                "Failed to read meta() from extractor '%s'", model, exc_info=True
+        async with NERClient(settings) as client:
+            result = await client.predict(
+                model=model,
+                text=text,
+                model_variant=model_variant,
+                normalize=normalize,
+                systems=systems,
+                restrict_types=restrict_types,
             )
 
-    return ExtractResponse(text=text or "", entities=entities, meta=meta)
+        # Parse response from NER service
+        entities = [Entity(**e) for e in result.get("entities", [])]
+        meta = result.get("meta", {})
+
+        # Apply regex-based normalization to fill missing code values
+        for entity in entities:
+            if not entity.code or entity.code is None:
+                normalized = extract_normalized_value(entity.text, entity.type)
+                entity.code = normalized
+
+        # Simplify meta to only essential fields for thesis
+        simplified_meta = {
+            "model": meta.get("model"),
+            "inference_time_ms": meta.get("inference_time_ms"),
+            "entity_count": len(entities),
+        }
+
+        return ExtractResponse(text=text, entities=entities, meta=simplified_meta)
+
+    except NERServiceError as exc:
+        logger.exception("NER service call failed for model '%s'", model)
+        raise RuntimeError(f"NER service unavailable: {exc}") from exc

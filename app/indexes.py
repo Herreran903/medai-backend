@@ -44,7 +44,7 @@ Usage:
         ensure_indexes(db)
 
 See Also:
-    - :mod:`app.services.store` for document insertion logic
+    - :mod:`app.repositories.episode_repository` for data access layer
     - :mod:`app.main` for startup initialization
 """
 

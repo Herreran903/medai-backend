@@ -5,14 +5,19 @@ This module defines the FastAPI router for clinical Named Entity Recognition (NE
 endpoints, providing the primary API interface for the MedAI backend.
 
 Architecture Context:
-    The extraction router is the main entry point for clinical NLP operations:
+    The extraction router serves as the thin API layer that delegates to the
+    ExtractionService for all business logic:
 
     - Single note extraction (``POST /extract``)
     - Batch file processing (``POST /extract-batch``)
     - Result retrieval (``GET /notes/{note_id}``)
 
-    All endpoints integrate with the extraction pipeline, storage layer,
-    and optional UMLS normalization service.
+    Following the Service Layer pattern from fastapi-templates skill, routers
+    are kept minimal and only handle:
+    - Request validation (via Pydantic)
+    - Dependency injection
+    - Delegation to service layer
+    - Response formatting (handled by Pydantic)
 
 API Design:
     The API follows REST conventions with multipart/form-data for file uploads:
@@ -27,10 +32,8 @@ Supported Models:
     - ``llm``: LLM-based extraction (variants: claude, gpt)
 
 Integration Points:
-    - :mod:`app.services.pipeline`: Extraction orchestration
-    - :mod:`app.services.store`: MongoDB persistence
-    - :mod:`app.services.text_utils`: File format conversion
-    - :mod:`app.deps`: Database and settings injection
+    - :mod:`app.services.extraction_service`: Business logic orchestration
+    - :mod:`app.deps`: Dependency injection for service layer
 
 Usage:
     The router is mounted in :mod:`app.main` and exposes endpoints at:
@@ -41,38 +44,28 @@ Usage:
 
 See Also:
     - :mod:`app.schemas` for request/response models
-    - :mod:`app.services.pipeline` for extraction logic
+    - :mod:`app.services.extraction_service` for business logic
 """
 
-import json
-from datetime import datetime
-from typing import Dict, List, Optional
+from typing import List, Optional
 
-from bson import ObjectId
 from fastapi import (
     APIRouter,
     Depends,
     File,
     Form,
-    HTTPException,
     Path,
     UploadFile,
     status,
 )
-from pymongo.database import Database
 
-from app.config import Settings
-from app.deps import get_db, settings_dep
+from app.deps import get_extraction_service
 from app.schemas import (
-    BatchAckItem,
     BatchAckResponse,
-    BatchItem,
-    Entity,
     ExtractAck,
     ExtractResponse,
 )
-from app.services.store import save_result
-from app.services.text_utils import read_any_to_text
+from app.services.extraction_service import ExtractionService
 
 router = APIRouter(
     tags=["Extraction"],
@@ -88,73 +81,6 @@ FastAPI router for extraction endpoints.
 All endpoints are tagged with "Extraction" for OpenAPI grouping.
 Common error responses are defined at the router level.
 """
-
-
-def _extract_from_text(*args, **kwargs):
-    """
-    Lazy import wrapper for extraction pipeline.
-
-    Defers import of the pipeline module to avoid circular dependencies
-    and reduce startup time by delaying model loading.
-
-    Returns:
-        Result from :func:`app.services.pipeline.extract_from_text`.
-    """
-    from app.services.pipeline import extract_from_text
-
-    return extract_from_text(*args, **kwargs)
-
-
-def _parse_iso8601(dt: Optional[str]) -> Optional[datetime]:
-    """
-    Parse ISO 8601 date string to datetime object.
-
-    Handles various ISO 8601 formats including:
-
-    - Full datetime: ``2024-01-15T10:30:00``
-    - With timezone: ``2024-01-15T10:30:00Z`` or ``2024-01-15T10:30:00+00:00``
-    - Date only: ``2024-01-15`` (assumes midnight)
-
-    Args:
-        dt: ISO 8601 formatted date string, or None.
-
-    Returns:
-        Parsed datetime object, or None if input is None/empty.
-
-    Raises:
-        HTTPException: 400 error if date format is invalid.
-    """
-    if not dt:
-        return None
-    s = dt.strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    try:
-        return datetime.fromisoformat(s)
-    except ValueError:
-        try:
-            return datetime.fromisoformat(s + "T00:00:00")
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid note_date format")
-
-
-def _parse_csv(v: Optional[str]) -> List[str]:
-    """
-    Parse comma-separated string to list.
-
-    Args:
-        v: Comma-separated string (e.g., "SNOMEDCT_US,ICD10CM").
-
-    Returns:
-        List of trimmed non-empty strings.
-
-    Example:
-        >>> _parse_csv("SNOMEDCT_US, ICD10CM")
-        ['SNOMEDCT_US', 'ICD10CM']
-    """
-    if not v:
-        return []
-    return [p.strip() for p in v.split(",") if p.strip()]
 
 
 @router.post(
@@ -186,8 +112,8 @@ and laboratory values. Results are persisted to MongoDB for later retrieval.
 - `llm`: Highest flexibility (variants: `claude`, `gpt`)
 
 **Normalization:**
-When `normalize=true`, extracted diagnosis entities (DX) are linked to
-SNOMED-CT and ICD-10 codes via UMLS lookup.
+Normalization is currently disabled in the gateway; the `normalize` flag is
+accepted but ignored.
 """,
     response_description="Acknowledgment with note ID and optional full result",
 )
@@ -208,13 +134,13 @@ async def extract(
         None,
         description="Model variant: `beto`/`roberta` for transformer, `claude`/`gpt` for llm.",
     ),
-    episode_id: Optional[str] = Form(
-        None,
-        description="Clinical episode identifier for grouping related notes. Required for storage.",
+    episode_id: str = Form(
+        ...,
+        description="Clinical episode identifier for grouping related notes. Required (API returns 400 if missing).",
     ),
-    note_date: Optional[str] = Form(
-        None,
-        description="ISO 8601 date of the clinical note (e.g., `2024-01-15T10:30:00`). Required for storage.",
+    note_date: str = Form(
+        ...,
+        description="ISO 8601 date of the clinical note (e.g., `2024-01-15T10:30:00`). Required (API returns 400 if missing).",
     ),
     save: Optional[bool] = Form(
         True,
@@ -222,7 +148,7 @@ async def extract(
     ),
     normalize: Optional[bool] = Form(
         False,
-        description="Whether to normalize DX entities to SNOMED-CT/ICD-10 codes via UMLS.",
+        description="Whether to normalize DX entities (currently ignored by gateway).",
     ),
     systems_csv: Optional[str] = Form(
         None,
@@ -236,15 +162,14 @@ async def extract(
         False,
         description="Whether to include full extraction result in response.",
     ),
-    db: Database = Depends(get_db),
-    settings: Settings = Depends(settings_dep),
+    service: ExtractionService = Depends(get_extraction_service),
 ):
     """
     Extract clinical entities from a single note.
 
-    This endpoint accepts either raw text or an uploaded file, processes it
-    through the specified NER model, optionally normalizes entities to
-    standard medical codes, and persists the result to MongoDB.
+    This endpoint delegates all business logic to the ExtractionService,
+    following the Service Layer pattern. The route handler only handles
+    request validation and service coordination.
 
     Args:
         text: Raw clinical note text.
@@ -254,77 +179,31 @@ async def extract(
         episode_id: Clinical episode identifier (required).
         note_date: Note date in ISO 8601 format (required).
         save: Whether to persist results.
-        normalize: Whether to apply UMLS normalization.
+        normalize: Whether to apply UMLS normalization (currently ignored by gateway).
         systems_csv: Target coding systems for normalization.
         restrict_types_csv: Entity types to normalize.
         expand: Include full result in response.
-        db: MongoDB database (injected).
-        settings: Application settings (injected).
+        service: ExtractionService instance (injected).
 
     Returns:
         ExtractAck: Acknowledgment with note ID and metadata.
 
     Raises:
-        HTTPException: 400 if neither text nor file provided, or missing required fields.
+        HTTPException: 400 if validation fails or required fields missing.
     """
-    if not text and not file:
-        raise HTTPException(status_code=400, detail="Provide either 'text' or 'file'")
-
-    if file:
-        content = await file.read()
-        text = read_any_to_text(file.filename, content)
-
-    systems = _parse_csv(systems_csv)
-    restrict_types = _parse_csv(restrict_types_csv)
-    # Normalization is temporarily disabled to avoid extra model loads.
-    normalize = False
-
-    note_dt = _parse_iso8601(note_date)
-    note_date_iso = note_dt.isoformat() if note_dt else None
-
-    res = _extract_from_text(
-        text or "",
-        model=model or settings.default_model,
+    return await service.extract_single(
+        text=text,
+        file=file,
+        model=model,
         model_variant=model_variant,
-        normalize=bool(normalize),
-        systems=systems,
-        restrict_types=restrict_types or None,
+        episode_id=episode_id or "",
+        note_date=note_date or "",
+        save=save or True,
+        normalize=normalize or False,
+        systems_csv=systems_csv,
+        restrict_types_csv=restrict_types_csv,
+        expand=expand or False,
     )
-
-    if not episode_id:
-        raise HTTPException(status_code=400, detail="Missing 'episode_id'")
-    if not note_date_iso:
-        raise HTTPException(
-            status_code=400, detail="Missing 'note_date' or invalid format"
-        )
-
-    note_id = None
-    stored = False
-    if save and settings.save_results:
-        note_id = save_result(
-            db=db,
-            payload=text or "",
-            result=res,
-            model=model,
-            episode_id=episode_id,
-            note_date_iso=note_date_iso,
-            filename=getattr(file, "filename", None),
-            source_system="api.extract",
-            dedupe_by_hash=True,
-        )
-        stored = True
-
-    ack = ExtractAck(
-        id=note_id or "",
-        stored=stored,
-        url=(f"/notes/{note_id}" if note_id else None),
-        filename=getattr(file, "filename", None),
-        episode_id=episode_id,
-        note_date=note_date_iso,
-        entity_count=len(res.entities) if hasattr(res, "entities") else None,
-        result=(res if expand else None),
-    )
-    return ack
 
 
 @router.post(
@@ -379,7 +258,7 @@ async def extract_batch(
     ),
     normalize: Optional[bool] = Form(
         False,
-        description="Whether to normalize DX entities to SNOMED-CT/ICD-10 codes.",
+        description="Whether to normalize DX entities (currently ignored by gateway).",
     ),
     systems_csv: Optional[str] = Form(
         None,
@@ -391,29 +270,26 @@ async def extract_batch(
     ),
     notes_meta: Optional[str] = Form(
         None,
-        description="JSON array with per-file metadata (filename, episode_id, note_date).",
+        description="JSON array with per-file metadata (filename, episode_id, note_date). Required; files without metadata will fail.",
     ),
-    db: Database = Depends(get_db),
-    settings: Settings = Depends(settings_dep),
+    service: ExtractionService = Depends(get_extraction_service),
 ):
     """
     Process multiple files for entity extraction.
 
-    Each file is processed independently through the extraction pipeline.
-    Metadata (episode_id, note_date) must be provided via the notes_meta
-    JSON parameter for each file.
+    This endpoint delegates all batch processing logic to the ExtractionService.
+    Each file is processed independently with individual error handling.
 
     Args:
         files: List of uploaded files.
         model: Extraction model identifier.
         model_variant: Model variant for transformer/llm.
         save: Whether to persist results.
-        normalize: Whether to apply UMLS normalization.
+        normalize: Whether to apply UMLS normalization (currently ignored by gateway).
         systems_csv: Target coding systems.
         restrict_types_csv: Entity types to normalize.
-        notes_meta: JSON array with per-file metadata.
-        db: MongoDB database (injected).
-        settings: Application settings (injected).
+        notes_meta: JSON array with per-file metadata (required).
+        service: ExtractionService instance (injected).
 
     Returns:
         BatchAckResponse: List of per-file acknowledgments.
@@ -421,92 +297,16 @@ async def extract_batch(
     Note:
         Files without matching metadata in notes_meta will fail with an error.
     """
-    systems = _parse_csv(systems_csv)
-    restrict_types = _parse_csv(restrict_types_csv)
-    # Normalization is temporarily disabled to avoid extra model loads.
-    normalize = False
-
-    # Parse per-file metadata
-    meta_by_filename: Dict[str, Dict[str, Optional[str]]] = {}
-    if notes_meta:
-        try:
-            raw = json.loads(notes_meta)
-            if isinstance(raw, list):
-                for m in raw:
-                    if isinstance(m, dict):
-                        fn = str(m.get("filename") or "").strip()
-                        if fn:
-                            meta_by_filename[fn] = {
-                                "episode_id": m.get("episode_id") or None,
-                                "note_date": m.get("note_date") or None,
-                            }
-        except Exception:
-            meta_by_filename = {}
-
-    items: List[BatchAckItem] = []
-    for f in files:
-        try:
-            content = await f.read()
-            text = read_any_to_text(f.filename, content)
-
-            meta = meta_by_filename.get(f.filename, {})
-            episode_id = meta.get("episode_id")
-            note_date_raw = meta.get("note_date")
-            note_dt = _parse_iso8601(note_date_raw) if note_date_raw else None
-            note_date_iso = note_dt.isoformat() if note_dt else None
-
-            if not episode_id:
-                raise ValueError(f"Missing 'episode_id' for '{f.filename}'")
-            if not note_date_iso:
-                raise ValueError(
-                    f"Missing 'note_date' or invalid format for '{f.filename}'"
-                )
-
-            res = _extract_from_text(
-                text,
-                model=model or settings.default_model,
-                model_variant=model_variant,
-                normalize=bool(normalize),
-                systems=systems,
-                restrict_types=restrict_types or None,
-            )
-
-            note_id = None
-            stored = False
-            if save and settings.save_results:
-                note_id = save_result(
-                    db=db,
-                    payload=text,
-                    result=res,
-                    model=model,
-                    episode_id=episode_id,
-                    note_date_iso=note_date_iso,
-                    filename=f.filename,
-                    source_system="api.extract-batch",
-                    dedupe_by_hash=True,
-                )
-                stored = True
-
-            items.append(
-                BatchAckItem(
-                    filename=f.filename,
-                    id=note_id,
-                    stored=stored,
-                    entity_count=(
-                        len(res.entities) if hasattr(res, "entities") else None
-                    ),
-                    url=(f"/notes/{note_id}" if note_id else None),
-                )
-            )
-        except Exception as e:
-            items.append(
-                BatchAckItem(
-                    filename=f.filename,
-                    stored=False,
-                    error=str(e),
-                )
-            )
-    return BatchAckResponse(items=items)
+    return await service.extract_batch(
+        files=files,
+        model=model,
+        model_variant=model_variant,
+        save=save or True,
+        normalize=normalize or False,
+        systems_csv=systems_csv,
+        restrict_types_csv=restrict_types_csv,
+        notes_meta_json=notes_meta,
+    )
 
 
 @router.get(
@@ -541,17 +341,17 @@ async def get_note(
         ...,
         description="Unique note identifier (UUID format) returned from extraction endpoints.",
     ),
-    db: Database = Depends(get_db),
+    service: ExtractionService = Depends(get_extraction_service),
 ):
     """
     Retrieve a stored extraction result.
 
-    Queries MongoDB for the note with the specified ID and returns
-    the complete extraction result including text, entities, and metadata.
+    This endpoint delegates note retrieval to the ExtractionService,
+    which uses the repository layer for database access.
 
     Args:
         note_id: UUID of the note to retrieve.
-        db: MongoDB database (injected).
+        service: ExtractionService instance (injected).
 
     Returns:
         ExtractResponse: Complete extraction result.
@@ -559,20 +359,4 @@ async def get_note(
     Raises:
         HTTPException: 404 if note not found.
     """
-    doc = db.episodes.find_one(
-        {"notes.note_id": note_id},
-        {
-            "_id": 0,
-            "notes": {"$elemMatch": {"note_id": note_id}},
-        },
-    )
-
-    if not doc or not doc.get("notes"):
-        raise HTTPException(status_code=404, detail="Note not found")
-
-    note = doc["notes"][0]
-    return ExtractResponse(
-        text=note.get("text") or "",
-        entities=[Entity(**e) for e in note.get("entities", [])],
-        meta=note.get("meta") or {},
-    )
+    return await service.get_note(note_id)

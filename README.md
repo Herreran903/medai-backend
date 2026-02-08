@@ -13,83 +13,87 @@ MedAI Backend is a production-grade REST API service that provides clinical Name
 
 ### Key Features
 
-- **Multiple NER Models**: Choose from LSTM, Transformer (BETO/RoBERTa), or LLM-based extraction
-- **Entity Normalization**: Optional UMLS-based normalization to SNOMED-CT and ICD-10 codes
+- **Multiple NER Models**: Choose from BiLSTM, Transformer (BETO/RoBERTa), or LLM-based extraction
+- **Microservices Architecture**: Independent services for each model with isolated dependencies
+- **Entity Normalization**: UMLS-based normalization to SNOMED-CT/ICD-10 (module available; currently disabled in gateway)
 - **Batch Processing**: Process multiple clinical notes in a single request
 - **Document Support**: Accept PDF, DOCX, and plain text files
 - **Persistent Storage**: MongoDB-based storage with content deduplication
 - **OpenAPI Documentation**: Auto-generated API documentation with Swagger/ReDoc
 
-## Architecture
+## Architecture (Microservices)
+
+The backend uses a microservices architecture where each NER model runs in an independent container, providing better isolation, faster startup times, and independent scaling capabilities.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        MedAI Backend                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         │
-│  │   FastAPI   │───▶│   Pipeline  │───▶│   Models    │         │
-│  │   Router    │    │   Service   │    │  Registry   │         │
-│  └─────────────┘    └─────────────┘    └─────────────┘         │
-│         │                  │                  │                 │
-│         │                  │           ┌──────┴──────┐          │
-│         │                  │           │             │          │
-│         ▼                  ▼           ▼             ▼          │
-│  ┌─────────────┐    ┌─────────────┐  ┌─────┐  ┌───────────┐    │
-│  │   Storage   │    │ Normalizer  │  │LSTM │  │Transformer│    │
-│  │  (MongoDB)  │    │   (UMLS)    │  └─────┘  └───────────┘    │
-│  └─────────────┘    └─────────────┘           ┌───────────┐    │
-│                                               │    LLM    │    │
-│                                               └───────────┘    │
-└─────────────────────────────────────────────────────────────────┘
+                    ┌─────────────────────┐
+                    │   API Gateway       │
+                    │   Port: 8000        │
+                    │   Size: ~200MB      │
+                    └──────────┬──────────┘
+                               │
+        ┌──────────────────────┼──────────────────────┐
+        │                      │                      │
+        ▼                      ▼                      ▼
+┌───────────────┐      ┌───────────────┐     ┌──────────────┐
+│ Transformer   │      │   BiLSTM     │     │     LLM      │
+│ Port: 8001    │      │  Port: 8002   │     │  Port: 8003  │
+│ Size: ~1.8GB  │      │  Size: ~1.2GB │     │  Size: ~100MB│
+│ BETO/RoBERTa  │      │  BiLSTM-CRF   │     │ Claude/GPT   │
+└───────────────┘      └───────────────┘     └──────────────┘
 ```
 
-### Component Overview
+### Services
 
-| Component | Description |
-|-----------|-------------|
-| **FastAPI Router** | REST API endpoints for extraction and retrieval |
-| **Pipeline Service** | Orchestrates model selection, extraction, and normalization |
-| **Model Registry** | Centralized registry of available NER models |
-| **LSTM Extractor** | BiLSTM-CRF model for fast inference |
-| **Transformer Extractor** | Fine-tuned BETO/RoBERTa for high accuracy |
-| **LLM Extractor** | Claude/GPT-based extraction with structured outputs |
-| **Normalizer** | UMLS-based entity normalization to standard codes |
-| **Storage** | MongoDB persistence with deduplication |
+| Service | Port | Description | Image Size | Startup Time |
+|---------|------|-------------|------------|--------------|
+| **Gateway** | 8000 | API REST, routing, MongoDB | ~200MB | <2s |
+| **Transformer** | 8001 | BETO/RoBERTa NER | ~1.8GB | 5-30s |
+| **BiLSTM** | 8002 | BiLSTM-CRF NER | ~1.2GB | 5-10s |
+| **LLM** | 8003 | Claude/GPT NER | ~100MB | <1s |
+| **MongoDB** | 27017 | Database | - | <5s |
 
-## Supported Entity Types
+### Microservices Benefits
 
-MedAI recognizes clinical entities specific to mechanical ventilation notes:
+- **Lightweight Gateway**: 94% reduction in size (3.5GB → 200MB)
+- **Fast Startup**: Gateway ready in <2s vs 10-15s for monolith
+- **Isolated Dependencies**: PyTorch, TensorFlow, and LLM SDKs in separate containers
+- **No Version Conflicts**: Each model can use different library versions
+- **Granular Scaling**: Scale only the Transformer service if needed
+- **Selective Deployment**: Update one service without affecting others
 
-### Ventilation Configuration
-| Entity | Description | Example |
-|--------|-------------|---------|
-| `MODO` | Ventilator mode | AC/VC, PC, SIMV, PSV |
-| `FIO2` | Fraction of inspired oxygen | 60% |
-| `PEEP` | Positive end-expiratory pressure | 8 cmH2O |
-| `FR` | Respiratory rate | 14/20 rpm |
-| `VT` | Tidal volume | 420 mL |
+## Quick Start
 
-### Vital Signs
-| Entity | Description | Example |
-|--------|-------------|---------|
-| `TEMP` | Body temperature | 38.5°C |
-| `PA` | Blood pressure | 120/80 mmHg |
-| `FC` | Heart rate | 92 lpm |
-| `SAO2` | Oxygen saturation | 95% |
+### Development
 
-### Arterial Blood Gases
-| Entity | Description | Example |
-|--------|-------------|---------|
-| `PH` | Arterial pH | 7.35 |
-| `PACO2` | Partial pressure of CO2 | 45 mmHg |
-| `PAO2` | Partial pressure of O2 | 80 mmHg |
-| `PAFI` | PaO2/FiO2 ratio | 250 |
+```bash
+# Start all microservices
+docker-compose -f docker-compose.dev.yml up --build
 
-### Clinical
-| Entity | Description | Example |
-|--------|-------------|---------|
-| `DX` | Diagnosis | Neumonía adquirida en comunidad |
+# Verify services are ready (wait 30-60s for models to load)
+curl http://localhost:8000/health
+```
+
+### Production
+
+```bash
+# Configure environment variables first
+cp .env.prod .env.prod.local
+# Edit .env.prod.local with your MongoDB URI and API keys
+
+# Start services
+docker-compose -f docker-compose.prod.yml up --build
+```
+
+### Testing
+
+```bash
+# Quick test (2-3 minutes)
+./quick_test.sh
+
+# Comprehensive test suite (5-10 minutes)
+./test_microservices.sh
+```
 
 ## API Endpoints
 
@@ -106,6 +110,18 @@ curl -X POST "http://localhost:8000/extract" \
   -F "note_date=2024-01-15T10:30:00"
 ```
 
+**Request Parameters:**
+- `text` or `file`: Clinical note text or file (PDF/DOCX/TXT)
+- `model`: Model type (`lstm`, `transformer`, or `llm`)
+- `model_variant`: Model variant (optional)
+  - For `transformer`: `beto` (default) or `roberta`
+  - For `llm`: `claude` (default) or `gpt`
+- `episode_id`: Episode identifier (required; API returns 400 if missing)
+- `note_date`: Clinical note date (ISO 8601, required; API returns 400 if missing)
+- `save`: Save result (default: `true`)
+- `expand`: Include full result in response (default: `false`)
+- `normalize`: Enable UMLS normalization (currently ignored by gateway; default: `false`)
+
 #### `POST /extract-batch`
 Process multiple files in a single request.
 
@@ -114,8 +130,10 @@ curl -X POST "http://localhost:8000/extract-batch" \
   -F "files=@nota_001.pdf" \
   -F "files=@nota_002.pdf" \
   -F "model=transformer" \
-  -F 'notes_meta=[{"filename":"nota_001.pdf","episode_id":"EP-001","note_date":"2024-01-15"}]'
+  -F 'notes_meta=[{"filename":"nota_001.pdf","episode_id":"EP-001","note_date":"2024-01-15"},{"filename":"nota_002.pdf","episode_id":"EP-001","note_date":"2024-01-16"}]'
 ```
+
+`notes_meta` is required. Each uploaded file must have matching `episode_id` and `note_date` metadata.
 
 ### Retrieval
 
@@ -128,73 +146,76 @@ curl "http://localhost:8000/notes/550e8400-e29b-41d4-a716-446655440000"
 
 ### Health
 
-#### `GET /healthz`
+#### `GET /health`
 Health check endpoint for container orchestration.
 
 ```bash
-curl "http://localhost:8000/healthz"
+curl "http://localhost:8000/health"
 ```
 
-## Installation
+## Supported Entity Types
 
-### Prerequisites
+MedAI recognizes clinical entities specific to mechanical ventilation notes:
 
-- Python 3.10+
-- MongoDB 4.4+
-- Docker (optional, for containerized deployment)
+### Ventilation Configuration
+| Entity | Description | Example |
+|--------|-------------|---------|
+| `MODO` | Ventilator mode | AC/VC, PC, SIMV, PSV |
+| `FIO2` | Fraction of inspired oxygen | 60% |
+| `PEEP` | Positive end-expiratory pressure | 8 cmH2O |
+| `FR` | Respiratory rate | 14/20 rpm |
+| `VT` | Tidal volume | 420 mL |
+| `FLUJO` | Flow rate | 40 L/min |
+| `I_E` | Inspiratory/Expiratory ratio | 1:2 |
+| `SENS` | Sensitivity | -2 cmH2O |
 
-### Local Development
+### Vital Signs
+| Entity | Description | Example |
+|--------|-------------|---------|
+| `TEMP` | Body temperature | 38.5°C |
+| `PA` | Blood pressure | 120/80 mmHg |
+| `PAS` | Systolic blood pressure | 120 mmHg |
+| `PAD` | Diastolic blood pressure | 80 mmHg |
+| `PAM` | Mean arterial pressure | 93 mmHg |
+| `FC` | Heart rate | 92 lpm |
+| `SAO2` | Oxygen saturation | 95% |
+| `GLICEMIA` | Blood glucose | 110 mg/dL |
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/herreran903/medai-backend.git
-   cd medai-backend
-   ```
+### Arterial Blood Gases
+| Entity | Description | Example |
+|--------|-------------|---------|
+| `PH` | Arterial pH | 7.35 |
+| `PACO2` | Partial pressure of CO2 | 45 mmHg |
+| `PAO2` | Partial pressure of O2 | 80 mmHg |
+| `HCO3` | Bicarbonate | 24 mEq/L |
+| `BE` | Base excess | -2 mEq/L |
+| `PAFI` | PaO2/FiO2 ratio | 250 |
 
-2. **Create virtual environment**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # Linux/macOS
-   # or
-   .\venv\Scripts\activate  # Windows
-   ```
+### Ventilation Response
+| Entity | Description | Example |
+|--------|-------------|---------|
+| `PP` | Plateau pressure | 25 cmH2O |
+| `PMES` | Meseta pressure | 23 cmH2O |
+| `PM` | Mean pressure | 15 cmH2O |
 
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Anthropometry
+| Entity | Description | Example |
+|--------|-------------|---------|
+| `EDAD` | Age | 65 años |
+| `PESO` | Weight | 75 kg |
+| `TALLA` | Height | 1.70 m |
 
-4. **Configure environment**
-   ```bash
-   cp .env.dev .env
-   # Edit .env with your configuration
-   ```
-
-5. **Start MongoDB**
-   ```bash
-   docker run -d -p 27017:27017 --name medai-mongo mongo:6
-   ```
-
-6. **Run the application**
-   ```bash
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-   ```
-
-### Docker Deployment
-
-#### Development
-```bash
-docker-compose -f docker-compose.dev.yml up --build
-```
-
-#### Production
-```bash
-docker-compose -f docker-compose.prod.yml up -d
-```
+### Clinical
+| Entity | Description | Example |
+|--------|-------------|---------|
+| `DX` | Diagnosis | Neumonía adquirida en comunidad |
+| `POSTURA` | Patient position | Prono |
 
 ## Configuration
 
-Configuration is managed through environment variables. Create a `.env` file based on `.env.dev`:
+Configuration is managed through environment variables. Create a `.env` file based on `.env.dev` or `.env.prod`:
+
+### Core Settings
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -203,26 +224,49 @@ Configuration is managed through environment variables. Create a `.env` file bas
 | `HOST` | Server bind address | 0.0.0.0 |
 | `PORT` | Server port | 8000 |
 | `LOG_LEVEL` | Logging level | info |
+
+### Database
+
+| Variable | Description | Default |
+|----------|-------------|---------|
 | `MONGODB_URI` | MongoDB connection string | mongodb://mongo:27017 |
 | `MONGODB_DB` | Database name | medai |
 | `SAVE_RESULTS` | Enable result persistence | true |
-| `UMLS_APIKEY` | UMLS API key for normalization | (optional) |
-| `ANTHROPIC_API_KEY` | Anthropic API key for Claude | (optional) |
-| `OPENAI_API_KEY` | OpenAI API key for GPT | (optional) |
+
+### NER Service URLs (for microservices)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NER_TRANSFORMER_URL` | Transformer service URL | http://ner-transformer:8001 |
+| `NER_LSTM_URL` | BiLSTM service URL | http://ner-bilstm:8002 |
+| `NER_LLM_URL` | LLM service URL | http://ner-llm:8003 |
+
+### Model Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
 | `TRANSFORMER_BETO_MODEL_ID` | BETO model Hugging Face ID | NicolasUnivalle/beto-vm-ner-full |
 | `TRANSFORMER_ROBERTA_MODEL_ID` | RoBERTa model Hugging Face ID | NicolasUnivalle/roberta-vm-ner-full |
 
+### API Keys (optional)
+
+| Variable | Description | Required For |
+|----------|-------------|--------------|
+| `UMLS_APIKEY` | UMLS API key for normalization | Entity normalization (module; gateway disabled) |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Claude | LLM model with Claude |
+| `OPENAI_API_KEY` | OpenAI API key for GPT | LLM model with GPT |
+
 ## Model Selection
 
-### LSTM
+### BiLSTM (model=`lstm`)
 Fast inference with moderate accuracy. Best for high-throughput scenarios.
 
 ```bash
 curl -X POST "http://localhost:8000/extract" \
   -F "model=lstm" \
-  -F "text=..." \
-  -F "episode_id=..." \
-  -F "note_date=..."
+  -F "text=Paciente con FiO2 60%" \
+  -F "episode_id=EP-001" \
+  -F "note_date=2024-01-15T10:00:00"
 ```
 
 ### Transformer (Recommended)
@@ -233,17 +277,17 @@ Best accuracy for clinical NER. Supports BETO and RoBERTa variants.
 curl -X POST "http://localhost:8000/extract" \
   -F "model=transformer" \
   -F "model_variant=beto" \
-  -F "text=..." \
-  -F "episode_id=..." \
-  -F "note_date=..."
+  -F "text=Paciente con FiO2 60%" \
+  -F "episode_id=EP-001" \
+  -F "note_date=2024-01-15T10:00:00"
 
 # RoBERTa
 curl -X POST "http://localhost:8000/extract" \
   -F "model=transformer" \
   -F "model_variant=roberta" \
-  -F "text=..." \
-  -F "episode_id=..." \
-  -F "note_date=..."
+  -F "text=Paciente con FiO2 60%" \
+  -F "episode_id=EP-001" \
+  -F "note_date=2024-01-15T10:00:00"
 ```
 
 ### LLM
@@ -254,22 +298,25 @@ Highest flexibility with structured outputs. Requires API keys.
 curl -X POST "http://localhost:8000/extract" \
   -F "model=llm" \
   -F "model_variant=claude" \
-  -F "text=..." \
-  -F "episode_id=..." \
-  -F "note_date=..."
+  -F "text=Paciente con FiO2 60%" \
+  -F "episode_id=EP-001" \
+  -F "note_date=2024-01-15T10:00:00"
 
 # GPT
 curl -X POST "http://localhost:8000/extract" \
   -F "model=llm" \
   -F "model_variant=gpt" \
-  -F "text=..." \
-  -F "episode_id=..." \
-  -F "note_date=..."
+  -F "text=Paciente con FiO2 60%" \
+  -F "episode_id=EP-001" \
+  -F "note_date=2024-01-15T10:00:00"
 ```
 
-## Entity Normalization
+## Entity Normalization (Currently Disabled in Gateway)
 
-Enable UMLS-based normalization to link diagnosis entities to SNOMED-CT and ICD-10 codes:
+The normalization module can link diagnosis entities to SNOMED-CT and ICD-10 codes, but
+the gateway currently forces `normalize=false` (requests are accepted and ignored).
+
+If/when normalization is re-enabled, use:
 
 ```bash
 curl -X POST "http://localhost:8000/extract" \
@@ -281,9 +328,234 @@ curl -X POST "http://localhost:8000/extract" \
   -F "note_date=2024-01-15"
 ```
 
-**Requirements:**
+**Requirements (when enabled):**
 - Set `UMLS_APIKEY` environment variable
 - Register for UMLS API access at https://uts.nlm.nih.gov/
+
+## Testing
+
+### Quick Test
+```bash
+./quick_test.sh
+```
+
+Runs a 2-3 minute validation to verify:
+- Gateway is responding
+- All NER services are ready
+- Basic extraction works for each model
+
+### Comprehensive Test
+```bash
+./test_microservices.sh
+```
+
+Runs a 5-10 minute test suite covering:
+- Health checks for all services
+- Single and batch extraction
+- All model variants (BiLSTM, Transformer BETO/RoBERTa, LLM Claude/GPT)
+- Document processing (PDF/DOCX/TXT)
+- Result retrieval
+- Deduplication
+
+## Deployment
+
+### Development (Local MongoDB)
+
+```bash
+docker-compose -f docker-compose.dev.yml up --build
+```
+
+This configuration:
+- Uses local MongoDB container
+- Enables hot reload for development
+- Exposes all service ports for debugging
+
+### Production (MongoDB Atlas)
+
+```bash
+# 1. Configure environment
+cp .env.prod .env.prod.local
+# Edit MONGODB_URI, ANTHROPIC_API_KEY, OPENAI_API_KEY
+
+# 2. Start services
+docker-compose -f docker-compose.prod.yml up --build
+```
+
+### Production (Local MongoDB)
+
+```bash
+docker-compose -f docker-compose.prod.yml \
+               -f docker-compose.prod.localdb.yml up --build
+```
+
+### Secure Exposure with Cloudflare Tunnel
+
+```bash
+# The tunnel only exposes the gateway (port 8000)
+# NER services remain internal
+cloudflared tunnel run medai-backend
+
+# Verify external access
+curl https://medai.your-domain.com/health
+```
+
+## Monitoring and Troubleshooting
+
+### View Logs
+
+```bash
+# All services
+docker-compose -f docker-compose.dev.yml logs -f
+
+# Specific service
+docker-compose -f docker-compose.dev.yml logs -f gateway
+docker-compose -f docker-compose.dev.yml logs -f ner-transformer
+docker-compose -f docker-compose.dev.yml logs -f ner-bilstm
+docker-compose -f docker-compose.dev.yml logs -f ner-llm
+```
+
+### Health Checks
+
+```bash
+# Gateway (liveness)
+curl http://localhost:8000/health
+
+# NER services
+curl http://localhost:8001/health   # Transformer (liveness)
+curl http://localhost:8002/health   # BiLSTM (liveness)
+curl http://localhost:8003/health   # LLM (liveness)
+
+# NER services (readiness - checks if model is loaded)
+curl http://localhost:8001/readyz  # Transformer
+curl http://localhost:8002/readyz  # BiLSTM
+curl http://localhost:8003/readyz  # LLM
+```
+
+### Common Issues
+
+#### Transformer takes long to start
+**Cause**: First download of model from Hugging Face Hub (~500MB)
+
+**Solution**: Wait 30-60 seconds on first run. Model is cached in volume `transformer_cache` for subsequent runs.
+
+#### BiLSTM fails to start
+**Cause**: Model files not copied correctly
+
+**Solution**:
+```bash
+# Verify files exist
+ls services/ner-bilstm/models/model/
+
+# Rebuild service
+docker-compose -f docker-compose.dev.yml build ner-bilstm
+```
+
+#### LLM returns 503
+**Cause**: API keys not configured
+
+**Solution**:
+```bash
+# Configure in .env.dev
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+
+# Restart service
+docker-compose -f docker-compose.dev.yml restart ner-llm
+```
+
+#### Gateway cannot connect to services
+**Cause**: Services in different network or not started
+
+**Solution**:
+```bash
+# Verify all services in same network
+docker network inspect medai-microservices-dev
+
+# Check service status
+docker-compose -f docker-compose.dev.yml ps
+
+# Restart all
+docker-compose -f docker-compose.dev.yml down
+docker-compose -f docker-compose.dev.yml up
+```
+
+## Development
+
+### Project Structure
+
+```
+medai-backend/
+├── app/                       # API Gateway application
+│   ├── config.py              # Application configuration
+│   ├── deps.py                # FastAPI dependency injection
+│   ├── indexes.py             # MongoDB index definitions
+│   ├── main.py                # FastAPI application entry point
+│   ├── schemas.py             # Pydantic request/response models
+│   ├── repositories/          # Data access layer (Repository pattern)
+│   │   ├── __init__.py
+│   │   └── episode_repository.py  # Episode/note data access
+│   ├── routers/
+│   │   └── extract.py         # Extraction API endpoints
+│   └── services/
+│       ├── extraction_service.py   # Business logic layer (Service pattern)
+│       ├── ner_client.py      # NER microservices client
+│       ├── normalizer.py      # UMLS entity normalization
+│       ├── pipeline.py        # Extraction orchestration
+│       ├── registry.py        # Model registry
+│       ├── text_utils.py      # Document text extraction
+│       └── utils.py           # Shared utilities
+├── services/                  # NER microservices
+│   ├── ner-transformer/       # Transformer service (BETO/RoBERTa)
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── app/
+│   │       ├── main.py        # FastAPI app
+│   │       ├── config.py
+│   │       └── extractor.py   # NER extraction logic
+│   ├── ner-bilstm/            # BiLSTM service (BiLSTM-CRF)
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   ├── app/
+│   │   └── models/            # BiLSTM model files
+│   └── ner-llm/               # LLM service (Claude/GPT)
+│       ├── Dockerfile
+│       ├── requirements.txt
+│       └── app/
+│           ├── main.py
+│           ├── config.py
+│           └── extractor.py
+├── shared/                    # Shared code between services
+│   ├── schemas.py             # Shared Pydantic models
+│   └── utils.py               # Shared utilities
+├── scripts/
+│   └── export_openapi.py      # OpenAPI schema export (multi-service)
+├── docker-compose.dev.yml     # Development configuration
+├── docker-compose.prod.yml    # Production configuration
+├── Dockerfile.gateway         # Gateway container image
+├── requirements.txt           # All gateway dependencies
+├── requirements-gateway.txt   # Minimal gateway dependencies
+└── README.md                  # This file
+```
+
+### Running Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+### Code Formatting
+
+```bash
+black app/ scripts/
+isort app/ scripts/
+```
+
+### Type Checking
+
+```bash
+mypy app/
+```
 
 ## OpenAPI Documentation
 
@@ -293,49 +565,28 @@ The API documentation is automatically generated and available at:
 - **ReDoc**: http://localhost:8000/redoc
 - **OpenAPI JSON**: http://localhost:8000/openapi.json
 
-### Exporting OpenAPI Schema
+### Exporting OpenAPI Schemas
 
-Generate the OpenAPI schema for documentation or client generation:
+Generate OpenAPI schemas for **all services** (gateway + microservices):
 
 ```bash
 python scripts/export_openapi.py
 ```
 
-This creates `openapi.json` in the repository root.
+**CI/Docs Tip:** set `DOCS_BUILD=1` to skip model loading and heavy dependencies.
+With this flag, `requirements.docs.txt` is sufficient to export schemas.
 
-## Project Structure
+This creates:
+- `openapi/gateway.json` - Gateway API (public endpoints)
+- `openapi/ner-transformer.json` - Transformer service
+- `openapi/ner-bilstm.json` - BiLSTM service
+- `openapi/ner-llm.json` - LLM service
+- `openapi.json` - Gateway schema (backward compatibility)
 
-```
-medai-backend/
-├── app/
-│   ├── config.py           # Application configuration
-│   ├── deps.py             # FastAPI dependencies
-│   ├── indexes.py          # MongoDB index definitions
-│   ├── main.py             # FastAPI application entry point
-│   ├── schemas.py          # Pydantic request/response models
-│   ├── models/
-│   │   ├── llm.py          # LLM-based extractor (Claude/GPT)
-│   │   ├── lstm.py         # BiLSTM-CRF extractor
-│   │   └── transformer.py  # Transformer extractor (BETO/RoBERTa)
-│   ├── routers/
-│   │   └── extract.py      # Extraction API endpoints
-│   └── services/
-│       ├── normalizer.py   # UMLS entity normalization
-│       ├── pipeline.py     # Extraction orchestration
-│       ├── registry.py     # Model registry
-│       ├── semantic_sim.py # Semantic similarity computation
-│       ├── store.py        # MongoDB storage
-│       ├── text_utils.py   # Document text extraction
-│       └── translator.py   # Spanish-English translation
-├── scripts/
-│   └── export_openapi.py   # OpenAPI schema export
-├── docker-compose.dev.yml  # Development Docker configuration
-├── docker-compose.prod.yml # Production Docker configuration
-├── Dockerfile              # Production container image
-├── Dockerfile.dev          # Development container image
-├── requirements.txt        # Python dependencies
-└── README.md               # This file
-```
+The schemas can be used for:
+- **Documentation**: Docusaurus integration
+- **Client Generation**: TypeScript, Python, etc.
+- **API Testing**: Contract validation
 
 ## Frontend Integration
 
@@ -361,28 +612,6 @@ The documentation includes:
 - API reference
 - Architecture overview
 - Deployment guides
-
-## Development
-
-### Running Tests
-
-```bash
-pip install -r requirements-dev.txt
-pytest tests/ -v
-```
-
-### Code Formatting
-
-```bash
-black app/ scripts/
-isort app/ scripts/
-```
-
-### Type Checking
-
-```bash
-mypy app/
-```
 
 ## License
 

@@ -15,28 +15,32 @@ Key Dependencies:
     - :func:`settings_dep`: Application configuration access
     - :func:`get_mongo_client`: MongoDB client connection (cached)
     - :func:`get_db`: MongoDB database instance (per-request)
+    - :func:`get_episode_repository`: Episode repository for data access
+    - :func:`get_extraction_service`: Extraction service for business logic
     - :func:`get_cors_origins`: CORS allowed origins list
 
 Lifecycle Management:
     - MongoDB client is cached at the module level via LRU cache
     - Database instances are yielded per-request for proper resource cleanup
     - Settings are cached via :func:`app.config.get_settings`
+    - Repository and Service instances are created per-request
 
 Usage in Routes:
     >>> from fastapi import Depends
-    >>> from app.deps import get_db, settings_dep
+    >>> from app.deps import get_extraction_service
     >>>
     >>> @router.post("/extract")
     >>> async def extract(
-    ...     db: Database = Depends(get_db),
-    ...     settings: Settings = Depends(settings_dep),
+    ...     service: ExtractionService = Depends(get_extraction_service),
     ... ):
-    ...     # db and settings are automatically injected
-    ...     pass
+    ...     # service is automatically injected with all dependencies
+    ...     return await service.extract_single(...)
 
 See Also:
     - :mod:`app.config` for Settings class definition
     - :mod:`app.routers.extract` for dependency usage examples
+    - :mod:`app.repositories` for repository pattern implementation
+    - :mod:`app.services.extraction_service` for service layer
 """
 
 from __future__ import annotations
@@ -161,7 +165,7 @@ def get_db(
         The MedAI database contains the following collections:
 
         - ``episodes``: Clinical episode documents containing patient notes
-          and extracted entities. See :mod:`app.services.store` for schema.
+          and extracted entities. See :mod:`app.repositories.episode_repository` for schema.
 
     Note:
         This dependency uses a generator pattern for potential future
@@ -196,3 +200,72 @@ def get_cors_origins(settings: Settings = Depends(settings_dep)) -> Iterable[str
         dynamic CORS handling is needed.
     """
     return settings.cors_origins
+
+
+def get_episode_repository(db: Database = Depends(get_db)):
+    """
+    Provide an EpisodeRepository instance as a FastAPI dependency.
+
+    This dependency creates a repository instance for data access operations,
+    implementing the Repository pattern to abstract database operations.
+
+    Args:
+        db: MongoDB database (auto-injected via Depends).
+
+    Returns:
+        EpisodeRepository: Repository instance for episode/note operations.
+
+    Example:
+        >>> @router.get("/episodes/{episode_id}")
+        >>> async def get_episode(
+        ...     episode_id: str,
+        ...     repo: EpisodeRepository = Depends(get_episode_repository)
+        ... ):
+        ...     return await repo.get_episode(episode_id)
+
+    Note:
+        A new repository instance is created per request, but it shares
+        the same database connection from the connection pool.
+    """
+    from app.repositories import EpisodeRepository
+
+    return EpisodeRepository(db)
+
+
+def get_extraction_service(
+    repository=Depends(get_episode_repository), settings: Settings = Depends(settings_dep)
+):
+    """
+    Provide an ExtractionService instance as a FastAPI dependency.
+
+    This dependency creates a service layer instance that orchestrates
+    extraction operations, implementing the Service Layer pattern to
+    separate business logic from API routing.
+
+    Args:
+        repository: Episode repository (auto-injected via Depends).
+        settings: Application settings (auto-injected via Depends).
+
+    Returns:
+        ExtractionService: Service instance for extraction operations.
+
+    Example:
+        >>> @router.post("/extract")
+        >>> async def extract(
+        ...     service: ExtractionService = Depends(get_extraction_service)
+        ... ):
+        ...     return await service.extract_single(
+        ...         text="...",
+        ...         model="transformer",
+        ...         episode_id="EP-001",
+        ...         note_date="2024-01-15"
+        ...     )
+
+    Note:
+        The service is created per request with injected dependencies,
+        providing a clean interface for business logic without direct
+        database or configuration access in route handlers.
+    """
+    from app.services.extraction_service import ExtractionService
+
+    return ExtractionService(repository, settings)

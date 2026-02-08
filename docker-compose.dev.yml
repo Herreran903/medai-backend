@@ -1,27 +1,126 @@
-# Docker Compose configuration for local development
+# ==============================================================================
+# MedAI Microservices - Development Environment
+# ==============================================================================
+# Docker Compose configuration for local development with microservices.
+# Includes local MongoDB for testing.
+#
+# Usage:
+#   docker-compose -f docker-compose.dev.yml up --build
+#
+# Services:
+#   - gateway: API Gateway (FastAPI, no ML dependencies)
+#   - ner-transformer: Transformer NER Service (PyTorch + HuggingFace)
+#   - ner-bilstm: BiLSTM NER Service (TensorFlow)
+#   - ner-llm: LLM NER Service (Anthropic/OpenAI clients)
+#   - mongo: MongoDB database (local)
+
 version: "3.8"
 
 services:
-  api:
+  # ===========================================================================
+  # API Gateway
+  # ===========================================================================
+  gateway:
     build:
       context: .
-      dockerfile: Dockerfile.dev
-    container_name: medai-api-dev
+      dockerfile: Dockerfile.gateway
+    container_name: medai-gateway-dev
     ports:
       - "8000:8000"
-    volumes:
-      # Mount app directory for hot-reload
-      - ./app:/app/app
     env_file:
       - .env.dev
     environment:
-      # Override MongoDB URI to use docker-compose service name
+      # Microservices mode enabled
+      - NER_MODE=remote
+
+      # Service URLs (Docker Compose service names)
+      - NER_TRANSFORMER_URL=http://ner-transformer:8001
+      - NER_LSTM_URL=http://ner-bilstm:8002
+      - NER_LLM_URL=http://ner-llm:8003
+
+      # MongoDB (local)
       - MONGODB_URI=mongodb://mongo:27017
+      - MONGODB_DB=medai
+
+      # Logging (development level)
+      - LOG_LEVEL=info
     depends_on:
       - mongo
+      - ner-transformer
+      - ner-bilstm
+      - ner-llm
+    networks:
+      - medai-network
     restart: unless-stopped
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  # ===========================================================================
+  # NER Transformer Service (BETO/RoBERTa)
+  # ===========================================================================
+  ner-transformer:
+    build:
+      context: .
+      dockerfile: services/ner-transformer/Dockerfile
+    container_name: medai-ner-transformer-dev
+    env_file:
+      - .env.dev
+    environment:
+      - MODEL_VARIANT=beto
+      - LOG_LEVEL=info
+    volumes:
+      # Cache Hugging Face models to avoid re-downloading
+      - transformer_cache:/root/.cache/huggingface
+      # Mount shared schemas (read-only)
+      - ./shared:/app/shared:ro
+    networks:
+      - medai-network
+    restart: unless-stopped
+    # No published ports - internal network only
+
+  # ===========================================================================
+  # NER BiLSTM Service (BiLSTM-CRF)
+  # ===========================================================================
+  ner-bilstm:
+    build:
+      context: .
+      dockerfile: services/ner-bilstm/Dockerfile
+    container_name: medai-ner-bilstm-dev
+    env_file:
+      - .env.dev
+    environment:
+      - MODEL_DIR=/app/models/model
+      - LOG_LEVEL=info
+    volumes:
+      # Mount shared schemas (read-only)
+      - ./shared:/app/shared:ro
+    networks:
+      - medai-network
+    restart: unless-stopped
+    # No published ports - internal network only
+
+  # ===========================================================================
+  # NER LLM Service (Claude/GPT)
+  # ===========================================================================
+  ner-llm:
+    build:
+      context: .
+      dockerfile: services/ner-llm/Dockerfile
+    container_name: medai-ner-llm-dev
+    env_file:
+      - .env.dev
+    environment:
+      - LLM_PROVIDER=gpt
+      - LOG_LEVEL=info
+    volumes:
+      # Mount shared schemas (read-only)
+      - ./shared:/app/shared:ro
+    networks:
+      - medai-network
+    restart: unless-stopped
+    # No published ports - internal network only
+
+  # ===========================================================================
+  # MongoDB Database (Local Development)
+  # ===========================================================================
   mongo:
     image: mongo:6
     container_name: medai-mongo-dev
@@ -29,10 +128,27 @@ services:
     ports:
       - "27017:27017"
     volumes:
-      - mongo_data:/data/db
+      - mongo_data_dev:/data/db
     environment:
       - MONGO_INITDB_DATABASE=medai
+    networks:
+      - medai-network
 
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  medai-network:
+    driver: bridge
+    name: medai-microservices-dev
+
+# =============================================================================
+# Volumes
+# =============================================================================
 volumes:
-  mongo_data:
+  transformer_cache:
     driver: local
+    name: medai-transformer-cache-dev
+  mongo_data_dev:
+    driver: local
+    name: medai-mongo-dev-data

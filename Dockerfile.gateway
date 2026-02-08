@@ -1,0 +1,27 @@
+# ==============================================================================
+# MedAI API Gateway - Dockerfile
+# ==============================================================================
+# Lightweight gateway image without ML dependencies.
+# Communicates with NER microservices via HTTP.
+#
+# Image size: ~200MB (no PyTorch/TensorFlow)
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements-gateway.txt ./
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements-gateway.txt
+
+# Copy application code
+COPY app ./app
+COPY shared ./shared
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()" || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -33,9 +33,9 @@ See Also:
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -199,11 +199,54 @@ class Settings(BaseSettings):
         description="Hugging Face model ID for RoBERTa-based clinical NER.",
     )
 
+    # Microservices configuration
+    ner_mode: Literal["local", "remote"] = Field(
+        default="local",
+        description=(
+            "NER execution mode: 'local' for monolith (models loaded in gateway), "
+            "'remote' for microservices (HTTP calls to NER services)."
+        ),
+    )
+
+    ner_transformer_url: str = Field(
+        default="http://ner-transformer:8001",
+        description="Transformer NER service URL (used when ner_mode='remote').",
+    )
+
+    ner_lstm_url: str = Field(
+        default="http://ner-bilstm:8002",
+        description="BiLSTM NER service URL (used when ner_mode='remote').",
+    )
+
+    ner_llm_url: str = Field(
+        default="http://ner-llm:8003",
+        description="LLM NER service URL (used when ner_mode='remote').",
+    )
+
+    ner_request_timeout: float = Field(
+        default=120.0,
+        description="Timeout for HTTP requests to NER services in seconds.",
+    )
+
+    ner_retry_attempts: int = Field(
+        default=3,
+        description="Number of retry attempts for failed NER service requests.",
+    )
+
+    @field_validator("cors_origins", "models_enabled", mode="before")
+    @classmethod
+    def parse_string_list(cls, v):
+        """Parse list fields from comma-separated string or list."""
+        if isinstance(v, str):
+            return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
     model_config = SettingsConfigDict(
         env_file=".env.dev",
         env_file_encoding="utf-8",
         case_sensitive=False,
         env_ignore_empty=True,
+        extra="ignore",
     )
     """
     Pydantic Settings configuration.

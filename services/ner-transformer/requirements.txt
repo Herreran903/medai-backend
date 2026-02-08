@@ -1,0 +1,24 @@
+# ==============================================================================
+# MedAI Transformer NER Service Dependencies
+# ==============================================================================
+# PyTorch-based dependencies for Transformer NER service.
+# Includes Hugging Face Transformers for BETO/RoBERTa models.
+
+# --- Web Framework & API ---
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# --- Data Validation ---
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# --- PyTorch & Transformers ---
+torch>=2.0.0
+transformers>=4.30.0
+accelerate>=0.20.0  # For efficient model loading
+sentencepiece>=0.1.99  # Tokenization for some models
+safetensors>=0.4.3  # Safe tensor serialization
+huggingface-hub>=0.24.0  # Model downloading
+
+# NOTE: No TensorFlow (LSTM service only)
+# NOTE: No LLM API clients (LLM service only)
