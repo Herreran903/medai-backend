@@ -88,11 +88,15 @@ docker-compose -f docker-compose.prod.yml up --build
 ### Testing
 
 ```bash
-# Quick test (2-3 minutes)
-./quick_test.sh
+# Basic health check
+curl http://localhost:8000/health
 
-# Comprehensive test suite (5-10 minutes)
-./test_microservices.sh
+# Minimal extraction test (text)
+curl -X POST "http://localhost:8000/extract" \
+  -F "text=Paciente con FiO2 60%, PEEP 8 cmH2O" \
+  -F "model=transformer" \
+  -F "episode_id=EP-001" \
+  -F "note_date=2024-01-15T10:30:00"
 ```
 
 ## API Endpoints
@@ -121,6 +125,8 @@ curl -X POST "http://localhost:8000/extract" \
 - `save`: Save result (default: `true`)
 - `expand`: Include full result in response (default: `false`)
 - `normalize`: Enable UMLS normalization (currently ignored by gateway; default: `false`)
+- `systems_csv`: Comma-separated target coding systems (relevant only if normalization were enabled)
+- `restrict_types_csv`: Comma-separated entity types to normalize (relevant only if normalization were enabled)
 
 #### `POST /extract-batch`
 Process multiple files in a single request.
@@ -314,24 +320,21 @@ curl -X POST "http://localhost:8000/extract" \
 
 ## Testing
 
-### Quick Test
+No automated test scripts are included in this repository at this time.
+
+Use these manual checks to validate a running stack:
+
 ```bash
-./quick_test.sh
+# Health check
+curl http://localhost:8000/health
+
+# Minimal extraction
+curl -X POST "http://localhost:8000/extract" \
+  -F "text=Paciente con FiO2 60%, PEEP 8 cmH2O" \
+  -F "model=transformer" \
+  -F "episode_id=EP-001" \
+  -F "note_date=2024-01-15T10:30:00"
 ```
-
-Runs a 2-3 minute validation to verify:
-- Gateway is responding
-- All NER services are ready
-- Basic extraction works for each model
-
-### Comprehensive Test
-```bash
-./test_microservices.sh
-```
-
-Runs a 5-10 minute test suite covering:
-- Health checks for all services
-- Single and batch extraction
 - All models (BiLSTM, Transformer RoBERTa, LLM GPT)
 - Document processing (PDF/DOCX/TXT)
 - Result retrieval
@@ -520,8 +523,8 @@ medai-backend/
 ### Running Tests
 
 ```bash
-pip install -r requirements-dev.txt
-pytest tests/ -v
+# No automated test suite is included in this repository.
+# Use the quick curl-based checks above to validate a running stack.
 ```
 
 ### Code Formatting

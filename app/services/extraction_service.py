@@ -163,7 +163,7 @@ class ExtractionService:
             text: Raw clinical note text
             file: Uploaded file (PDF, DOCX, TXT)
             model: Extraction model identifier
-            model_variant: Model variant (beto/roberta for transformer, claude/gpt for llm)
+            model_variant: Model variant (roberta for transformer, gpt for llm; both fixed)
             episode_id: Clinical episode identifier
             note_date: Note date in ISO 8601 format
             save: Whether to persist results

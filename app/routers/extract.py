@@ -29,7 +29,7 @@ API Design:
 Supported Models:
     - ``lstm``: BiLSTM-CRF model for fast inference
     - ``transformer``: Fine-tuned RoBERTa (FIXED: only roberta)
-    - ``llm``: LLM-based extraction (variants: claude, gpt)
+    - ``llm``: LLM-based extraction (FIXED: only gpt)
 
 Integration Points:
     - :mod:`app.services.extraction_service`: Business logic orchestration
@@ -109,7 +109,7 @@ and laboratory values. Results are persisted to MongoDB for later retrieval.
 **Model Selection:**
 - `lstm`: Fast inference, moderate accuracy
 - `transformer`: Best accuracy (FIXED: `roberta` only)
-- `llm`: Highest flexibility (variants: `claude`, `gpt`)
+- `llm`: Highest flexibility (FIXED: `gpt` only)
 
 **Normalization:**
 Normalization is currently disabled in the gateway; the `normalize` flag is
@@ -198,7 +198,7 @@ async def extract(
         model_variant=model_variant,
         episode_id=episode_id or "",
         note_date=note_date or "",
-        save=save or True,
+        save=save if save is not None else True,
         normalize=normalize or False,
         systems_csv=systems_csv,
         restrict_types_csv=restrict_types_csv,
@@ -301,7 +301,7 @@ async def extract_batch(
         files=files,
         model=model,
         model_variant=model_variant,
-        save=save or True,
+        save=save if save is not None else True,
         normalize=normalize or False,
         systems_csv=systems_csv,
         restrict_types_csv=restrict_types_csv,

@@ -112,7 +112,7 @@ class NERClient:
         ...     result = await client.predict(
         ...         model="transformer",
         ...         text="Paciente con FiO2 60%",
-        ...         model_variant="beto"
+        ...         model_variant="roberta"
         ...     )
     """
 
@@ -208,7 +208,7 @@ class NERClient:
         Args:
             model: Model identifier (transformer, lstm, llm)
             text: Input clinical text to process
-            model_variant: Optional model variant (beto, roberta, claude, gpt)
+            model_variant: Optional model variant (roberta, gpt; both fixed)
             normalize: Whether to apply UMLS normalization
             systems: Target coding systems for normalization
             restrict_types: Entity types to include (empty = all types)
@@ -226,7 +226,7 @@ class NERClient:
             >>> result = await client.predict(
             ...     model="transformer",
             ...     text="Paciente con FiO2 60%",
-            ...     model_variant="beto"
+            ...     model_variant="roberta"
             ... )
             >>> print(len(result["entities"]))
             2

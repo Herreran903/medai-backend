@@ -2,8 +2,8 @@
 LLM-Based Clinical Entity Extraction Module.
 
 This module implements clinical Named Entity Recognition (NER) using Large Language
-Models (LLMs) with structured output capabilities. It provides extractors for
-Claude (Anthropic) and GPT (OpenAI) with JSON schema validation.
+Models (LLMs) with structured output capabilities. It includes GPT (OpenAI) as the
+active provider and retains a Claude (Anthropic) extractor as legacy code.
 
 Architecture Context:
     The LLM extractor serves as an alternative to traditional NER models (LSTM,
@@ -13,14 +13,14 @@ Architecture Context:
 
     The module follows the Strategy pattern with a Facade:
 
-    - :class:`ClaudeLLMExtractor`: Anthropic Claude implementation
-    - :class:`GPTLLMExtractor`: OpenAI GPT implementation
+    - :class:`ClaudeLLMExtractor`: Anthropic Claude implementation (legacy)
+    - :class:`GPTLLMExtractor`: OpenAI GPT implementation (active)
     - :class:`LocalLLMExtractor`: Stub for future local model support
-    - :class:`LLMExtractor`: Facade that selects the appropriate extractor
+    - :class:`LLMExtractor`: Facade fixed to GPT for experiments
 
 Supported Providers:
-    - **Claude** (default): Uses Claude Sonnet 4.5 with system prompt for JSON output
-    - **GPT**: Uses GPT-4o with native structured outputs (JSON schema mode)
+    - **GPT** (active/fixed): Uses GPT with structured outputs (JSON schema mode)
+    - **Claude** (legacy): Claude Sonnet support retained but disabled in experiments
     - **Local**: Placeholder for Ollama/local model integration
 
 Entity Categories:
@@ -47,8 +47,8 @@ Output Format:
         ]
 
 Usage:
-    >>> from app.models.llm import LLMExtractor
-    >>> extractor = LLMExtractor(provider="claude")
+    >>> from app.extractor import LLMExtractor
+    >>> extractor = LLMExtractor(api_key="OPENAI_API_KEY")
     >>> entities = extractor.predict("Paciente con FiO2 60%, PEEP 8")
     >>> print(entities)
     [{"type": "FIO2", "text": "60%", ...}, {"type": "PEEP", "text": "8", ...}]
@@ -56,8 +56,8 @@ Usage:
 Configuration:
     API keys are read from environment variables:
 
-    - ``ANTHROPIC_API_KEY``: Required for Claude provider
-    - ``OPENAI_API_KEY``: Required for GPT provider
+    - ``OPENAI_API_KEY``: Required for GPT provider (active)
+    - ``ANTHROPIC_API_KEY``: Legacy (Claude extractor retained but disabled in experiments)
 
 See Also:
     - :mod:`app.services.pipeline` for extraction orchestration

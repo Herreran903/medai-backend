@@ -10,7 +10,7 @@ Architecture Context:
     operations in MedAI. It abstracts the complexity of:
 
     - Model selection and initialization
-    - Transformer variant resolution (BETO/RoBERTa)
+    - Transformer variant resolution (RoBERTa fixed)
     - Entity validation and standardization
     - Optional terminology normalization (handled downstream; disabled in gateway path)
 
@@ -47,7 +47,7 @@ Pipeline Flow:
 Model Caching:
     Transformer models are cached in memory to avoid repeated weight loading:
 
-    - Cache key: ``transformer:{variant}`` (e.g., "transformer:beto")
+    - Cache key: ``transformer:{variant}`` (e.g., "transformer:roberta")
     - Cache is module-level, persists for application lifetime
     - BiLSTM and LLM models use :data:`app.services.registry.MODEL_REGISTRY`
 
@@ -56,7 +56,7 @@ Usage:
     >>> result = extract_from_text(
     ...     "Paciente con FiO2 60%, PEEP 8 cmH2O",
     ...     model="transformer",
-    ...     model_variant="beto",
+    ...     model_variant="roberta",
     ...     normalize=False
     ... )
     >>> print(result.entities[0].type)
@@ -107,8 +107,8 @@ async def extract_from_text(
             :data:`app.services.registry.MODEL_REGISTRY`:
 
             - ``lstm``: BiLSTM-CRF model
-            - ``transformer``: Fine-tuned BETO/RoBERTa
-            - ``llm``: LLM-based extraction (Claude/GPT)
+            - ``transformer``: Fine-tuned RoBERTa (fixed)
+            - ``llm``: LLM-based extraction (GPT fixed)
 
         model_variant: Model-specific variant selection:
 

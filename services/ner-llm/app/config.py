@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # API keys
     anthropic_api_key: Optional[str] = Field(
         default=None,
-        description="Anthropic API key for Claude provider",
+        description="Legacy Anthropic API key (Claude provider disabled in experiments)",
     )
     openai_api_key: Optional[str] = Field(
         default=None,
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # Model selection
     claude_model: str = Field(
         default="claude-sonnet-4-5-20250929",
-        description="Claude model to use",
+        description="Legacy Claude model identifier (disabled in experiments)",
     )
     gpt_model: str = Field(
         default="gpt-5.2",

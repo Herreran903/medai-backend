@@ -5,13 +5,13 @@ This module implements a BiLSTM-based Named Entity Recognition (NER) extractor
 for clinical text, specifically trained on mechanical ventilation notes in Spanish.
 
 Architecture Context:
-    The LSTM extractor is one of three NER models available in MedAI:
+    The BiLSTM extractor is one of three NER models available in MedAI:
 
-    - **LSTM** (this module): BiLSTM-CRF with BIO tagging, trained on domain data
-    - **Transformer**: Fine-tuned BETO/RoBERTa models
-    - **LLM**: Claude/GPT-based extraction with structured outputs
+    - **BiLSTM** (this module): BiLSTM-CRF with BIO tagging, trained on domain data
+    - **Transformer**: Fine-tuned RoBERTa (fixed for experiments)
+    - **LLM**: GPT-based extraction (fixed for experiments)
 
-    The LSTM model provides fast inference with moderate accuracy, suitable
+    The BiLSTM model provides fast inference with moderate accuracy, suitable
     for high-throughput scenarios where transformer latency is prohibitive.
 
 Model Architecture:

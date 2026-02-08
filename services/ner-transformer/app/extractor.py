@@ -121,7 +121,7 @@ class BaseTransformerExtractor:
         Initialize the base Transformer extractor.
 
         Args:
-            model_id: Hugging Face model identifier (e.g., "NicolasUnivalle/beto-vm-ner-full")
+            model_id: Hugging Face model identifier (e.g., "NicolasUnivalle/roberta-vm-ner-full")
                 or path to local model directory.
             max_len: Maximum sequence length for tokenization. Longer sequences
                 are truncated.
@@ -190,7 +190,7 @@ class BaseTransformerExtractor:
             - ``code``: Normalized value (None initially, populated by pipeline)
 
         Example:
-            >>> extractor = BaseTransformerExtractor("NicolasUnivalle/beto-vm-ner-full")
+            >>> extractor = BaseTransformerExtractor("NicolasUnivalle/roberta-vm-ner-full")
             >>> entities = extractor.predict("FiO2 60%, PEEP 8 cmH2O")
             >>> entities[0]
             {'type': 'FIO2', 'text': '60%', 'start': 5, 'end': 8, 'code': None}

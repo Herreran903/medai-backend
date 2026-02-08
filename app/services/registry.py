@@ -19,8 +19,8 @@ Architecture Context:
 
 Registered Models:
     - ``lstm``: BiLSTM-CRF model for fast inference on clinical text
-    - ``transformer``: Fine-tuned Spanish Transformer (BETO/RoBERTa)
-    - ``llm``: Large Language Model extraction (Claude/GPT)
+    - ``transformer``: Fine-tuned Spanish RoBERTa (fixed)
+    - ``llm``: Large Language Model extraction (GPT fixed)
 
 Usage:
     >>> from app.services.registry import MODEL_REGISTRY
@@ -53,12 +53,12 @@ Registered Models:
         BiLSTM-CRF model - runs in NER BiLSTM Service (port 8002)
 
     ``transformer``:
-        Fine-tuned Spanish Transformer (BETO/RoBERTa) - runs in NER Transformer Service (port 8001)
-        Variants: "beto" (default), "roberta"
+        Fine-tuned Spanish RoBERTa - runs in NER Transformer Service (port 8001)
+        Variants: "roberta" (fixed)
 
     ``llm``:
-        Large Language Model extraction (Claude/GPT) - runs in NER LLM Service (port 8003)
-        Variants: "claude" (default), "gpt"
+        Large Language Model extraction (GPT) - runs in NER LLM Service (port 8003)
+        Variants: "gpt" (fixed)
 
 Example:
     >>> # Validate model name

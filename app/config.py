@@ -73,12 +73,11 @@ class Settings(BaseSettings):
             Used for validation and documentation purposes.
         umls_apikey: API key for UMLS (Unified Medical Language System) access.
             Required for entity normalization features.
-        anthropic_api_key: API key for Anthropic Claude LLM integration.
-            Required when using the "llm" model with "claude" variant.
-        openai_api_key: API key for OpenAI GPT integration.
-            Required when using the "llm" model with "gpt" variant.
-        transformer_beto_model_id: Hugging Face model identifier for BETO-based
-            NER extraction. Points to a fine-tuned Spanish BERT model.
+        anthropic_api_key: Legacy API key for Anthropic Claude integration.
+            Claude is disabled in experiments; retained for compatibility.
+        openai_api_key: API key for OpenAI GPT integration (active LLM provider).
+        transformer_beto_model_id: Legacy Hugging Face model identifier for BETO-based
+            NER extraction (not used in current experiments).
         transformer_beto_peft_model_id: DEPRECATED. Previously used for PEFT/LoRA
             adapter loading. Retained for configuration compatibility only.
         transformer_roberta_model_id: Hugging Face model identifier for RoBERTa-based
@@ -163,7 +162,7 @@ class Settings(BaseSettings):
     
     - ``lstm``: BiLSTM-CRF model trained on mechanical ventilation notes
     - ``transformer``: Fine-tuned RoBERTa for Spanish clinical NER (RoBERTa only)
-    - ``llm``: Large Language Model extraction via Claude or GPT APIs
+    - ``llm``: Large Language Model extraction via GPT API (Claude legacy)
     """
 
     umls_apikey: Optional[str] = Field(
@@ -173,7 +172,7 @@ class Settings(BaseSettings):
 
     anthropic_api_key: Optional[str] = Field(
         default=None,
-        description="Anthropic API key for Claude LLM-based extraction.",
+        description="Legacy Anthropic API key (Claude disabled in experiments).",
     )
 
     openai_api_key: Optional[str] = Field(

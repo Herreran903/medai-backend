@@ -2,7 +2,7 @@
 LLM NER Microservice - FastAPI Application.
 
 This microservice provides clinical Named Entity Recognition using
-Large Language Models (Claude/GPT) via a REST API.
+Large Language Models (GPT only, fixed for experiments) via a REST API.
 
 Endpoints:
     - POST /predict: Extract entities from clinical text
@@ -52,7 +52,7 @@ app = FastAPI(
     version="1.0.0",
     description=(
         "Clinical Named Entity Recognition microservice using Large Language Models "
-        "(Claude/GPT). Extracts structured medical entities from Spanish clinical notes "
+        "(GPT only, fixed for experiments). Extracts structured medical entities from Spanish clinical notes "
         "with focus on mechanical ventilation parameters."
     ),
 )
@@ -189,7 +189,7 @@ def readyz():
     tags=["Extraction"],
     summary="Extract clinical entities from text",
     description=(
-        "Processes clinical text using the configured LLM provider (Claude/GPT) "
+        "Processes clinical text using the configured LLM provider (GPT only) "
         "and returns structured medical entities with character offsets."
     ),
 )
