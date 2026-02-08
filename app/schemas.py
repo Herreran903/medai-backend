@@ -42,7 +42,6 @@ Usage:
 
 See Also:
     - :mod:`app.routers.extract` for API endpoint usage
-    - :mod:`app.services.normalizer` for code assignment logic
 """
 
 from typing import Any, Dict, List, Literal, Optional
@@ -61,12 +60,12 @@ class Code(BaseModel):
     Represents a code from a medical terminology system (e.g., SNOMED-CT, ICD-10)
     that has been linked to an extracted entity through the normalization process.
 
-    The code assignment is performed by :mod:`app.services.normalizer` using
-    UMLS (Unified Medical Language System) lookups and semantic similarity matching.
+    Represents a code from a medical terminology system that could be linked
+    to an extracted entity.
 
     Note:
         The gateway API does not currently include per-entity ``codes`` lists in
-        responses. Code objects are produced by the normalization module when enabled.
+        responses.
 
     Attributes:
         system: The coding system identifier (vocabulary source).

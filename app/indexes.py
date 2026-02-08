@@ -73,8 +73,8 @@ def ensure_indexes(db: Database) -> None:
 
         ``episodes.notes.content_hash``:
             Supports content-based deduplication of notes.
-            Used by :func:`app.services.store.save_result` to prevent
-            duplicate note insertion based on SHA-256 content hash.
+            Used by :meth:`app.repositories.episode_repository.EpisodeRepository.add_note`
+            to prevent duplicate note insertion based on SHA-256 content hash.
 
     Performance Considerations:
         - All indexes are single-field ascending indexes

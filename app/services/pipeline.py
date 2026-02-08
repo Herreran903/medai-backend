@@ -65,7 +65,6 @@ Usage:
 See Also:
     - :mod:`app.routers.extract` for API endpoint integration
     - :mod:`app.services.registry` for model registration
-    - :mod:`app.services.normalizer` for UMLS normalization
 """
 
 from __future__ import annotations
@@ -75,8 +74,6 @@ from typing import List, Optional
 
 from app.config import get_settings
 from app.schemas import Entity, ExtractResponse
-
-# from app.services.normalizer import NormOptions, normalize_entities
 from app.services.ner_client import NERClient, NERServiceError
 from app.services.registry import MODEL_REGISTRY
 from app.services.utils import extract_normalized_value
