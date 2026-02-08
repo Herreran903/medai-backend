@@ -30,9 +30,6 @@ services:
     env_file:
       - .env.dev
     environment:
-      # Microservices mode enabled
-      - NER_MODE=remote
-
       # Service URLs (Docker Compose service names)
       - NER_TRANSFORMER_URL=http://ner-transformer:8001
       - NER_LSTM_URL=http://ner-bilstm:8002

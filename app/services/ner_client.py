@@ -11,9 +11,9 @@ with NER microservices (Transformer, BiLSTM, LLM). It implements:
 - Connection pooling for performance
 
 Architecture Context:
-    This client is ONLY used when NER_MODE='remote' in the gateway configuration.
-    It routes extraction requests from the gateway to the appropriate NER service
-    based on the model parameter, maintaining the same interface as local extraction.
+    The gateway always delegates NER inference to microservices via HTTP.
+    This client routes extraction requests to the appropriate NER service
+    based on the model parameter.
 
 Usage:
     >>> from app.services.ner_client import NERClient

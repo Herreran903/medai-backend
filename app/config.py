@@ -33,7 +33,7 @@ See Also:
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -195,28 +195,20 @@ class Settings(BaseSettings):
         description="Hugging Face model ID for RoBERTa-based clinical NER (ACTIVE).",
     )
 
-    # Microservices configuration
-    ner_mode: Literal["local", "remote"] = Field(
-        default="local",
-        description=(
-            "NER execution mode: 'local' for monolith (models loaded in gateway), "
-            "'remote' for microservices (HTTP calls to NER services)."
-        ),
-    )
-
+    # Microservices configuration (always remote - gateway delegates to NER services)
     ner_transformer_url: str = Field(
         default="http://ner-transformer:8001",
-        description="Transformer NER service URL (used when ner_mode='remote').",
+        description="Transformer NER service URL.",
     )
 
     ner_lstm_url: str = Field(
         default="http://ner-bilstm:8002",
-        description="BiLSTM NER service URL (used when ner_mode='remote').",
+        description="BiLSTM NER service URL.",
     )
 
     ner_llm_url: str = Field(
         default="http://ner-llm:8003",
-        description="LLM NER service URL (used when ner_mode='remote').",
+        description="LLM NER service URL.",
     )
 
     ner_request_timeout: float = Field(
