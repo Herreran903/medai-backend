@@ -34,7 +34,7 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from fastapi import HTTPException, UploadFile, status
+from fastapi import HTTPException, UploadFile
 
 from app.config import Settings
 from app.repositories import EpisodeRepository

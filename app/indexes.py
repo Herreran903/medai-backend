@@ -73,7 +73,7 @@ def ensure_indexes(db: Database) -> None:
 
         ``episodes.notes.content_hash``:
             Supports content-based deduplication of notes.
-            Used by :meth:`app.repositories.episode_repository.EpisodeRepository.add_note`
+            Used by :meth:`app.repositories.episode_repository.EpisodeRepository.save_note`
             to prevent duplicate note insertion based on SHA-256 content hash.
 
     Performance Considerations:

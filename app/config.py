@@ -33,7 +33,7 @@ See Also:
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List, Optional
+from typing import List
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -69,11 +69,6 @@ class Settings(BaseSettings):
             When False, the API operates in stateless mode.
         default_model: Fallback model identifier when no model is specified in requests.
             Must be a key in :data:`app.services.registry.MODEL_REGISTRY`.
-        models_enabled: List of model identifiers available for extraction.
-            Used for validation and documentation purposes.
-        openai_api_key: API key for OpenAI GPT integration (active LLM provider).
-        transformer_roberta_model_id: Hugging Face model identifier for RoBERTa-based
-            NER extraction. Points to a fine-tuned Spanish RoBERTa model.
 
     Configuration Loading:
         Settings are loaded from environment variables with fallback to `.env.dev`.
@@ -83,8 +78,6 @@ class Settings(BaseSettings):
         >>> settings = Settings()
         >>> settings.mongodb_uri
         'mongodb://mongo:27017'
-        >>> settings.models_enabled
-        ['lstm', 'transformer', 'llm']
     """
 
     app_name: str = Field(
@@ -148,25 +141,6 @@ class Settings(BaseSettings):
     for clinical NER tasks.
     """
 
-    models_enabled: List[str] = ["lstm", "transformer", "llm"]
-    """
-    List of available extraction models.
-    
-    - ``lstm``: BiLSTM-CRF model trained on mechanical ventilation notes
-    - ``transformer``: Fine-tuned RoBERTa for Spanish clinical NER (RoBERTa only)
-    - ``llm``: Large Language Model extraction via GPT API (Claude legacy)
-    """
-
-    openai_api_key: Optional[str] = Field(
-        default=None,
-        description="OpenAI API key for GPT-based extraction.",
-    )
-
-    transformer_roberta_model_id: Optional[str] = Field(
-        default="NicolasUnivalle/roberta-vm-ner-full",
-        description="Hugging Face model ID for RoBERTa-based clinical NER (ACTIVE).",
-    )
-
     # Microservices configuration (always remote - gateway delegates to NER services)
     ner_transformer_url: str = Field(
         default="http://ner-transformer:8001",
@@ -188,12 +162,7 @@ class Settings(BaseSettings):
         description="Timeout for HTTP requests to NER services in seconds.",
     )
 
-    ner_retry_attempts: int = Field(
-        default=3,
-        description="Number of retry attempts for failed NER service requests.",
-    )
-
-    @field_validator("cors_origins", "models_enabled", mode="before")
+    @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_string_list(cls, v):
         """Parse list fields from comma-separated string or list."""

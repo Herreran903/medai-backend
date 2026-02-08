@@ -185,28 +185,6 @@ class EpisodeRepository:
         """
         return self.collection.find_one({"_id": episode_id})
 
-    async def get_episode_notes(
-        self, episode_id: str, limit: Optional[int] = None
-    ) -> list:
-        """
-        Get all notes for an episode.
-
-        Args:
-            episode_id: Episode identifier
-            limit: Maximum number of notes to return (None = all)
-
-        Returns:
-            List of note documents
-        """
-        episode = await self.get_episode(episode_id)
-        if not episode:
-            return []
-
-        notes = episode.get("notes", [])
-        if limit:
-            return notes[:limit]
-        return notes
-
     def build_note_document(
         self,
         note_id: str,

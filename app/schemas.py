@@ -15,22 +15,18 @@ Architecture Context:
 Schema Hierarchy:
     .. code-block:: text
 
-        Code (used by normalization module; not returned by the gateway)
         Entity
           └── ExtractResponse (contains List[Entity])
                 └── ExtractAck (contains Optional[ExtractResponse])
 
-        BatchItem
-          └── BatchAckItem
-                └── BatchAckResponse (contains List[BatchAckItem])
+        BatchAckItem
+          └── BatchAckResponse (contains List[BatchAckItem])
 
 Domain Model:
     The entity extraction domain follows this conceptual model:
 
     - **Entity**: A span of text identified as a clinical concept (e.g., diagnosis,
       medication, vital sign) with optional character offsets and a normalized value.
-    - **Code**: A standardized medical code (SNOMED-CT, ICD-10) produced by the
-      normalization module when enabled.
 
 Usage:
     These schemas are used in FastAPI route definitions for automatic
@@ -49,73 +45,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 # ==============================================================================
-# Medical Coding Schemas
+# Entity Schemas
 # ==============================================================================
-
-
-class Code(BaseModel):
-    """
-    Standardized medical code associated with a clinical entity.
-
-    Represents a code from a medical terminology system (e.g., SNOMED-CT, ICD-10)
-    that has been linked to an extracted entity through the normalization process.
-
-    Represents a code from a medical terminology system that could be linked
-    to an extracted entity.
-
-    Note:
-        The gateway API does not currently include per-entity ``codes`` lists in
-        responses.
-
-    Attributes:
-        system: The coding system identifier (vocabulary source).
-            Common values: "SNOMEDCT_US", "ICD10CM", "LOINC", "RXNORM".
-        code: The specific code within the system.
-            Format varies by system (e.g., "38341003" for SNOMED-CT).
-        display: Human-readable description of the code.
-            Typically the preferred term from the terminology.
-        score: Confidence score for the code assignment (0.0 to 1.0).
-            Based on semantic similarity between entity text and code description.
-        source: Origin of the code assignment.
-            Typically "UMLS" for normalized codes.
-
-    Example:
-        >>> code = Code(
-        ...     system="SNOMEDCT_US",
-        ...     code="233604007",
-        ...     display="Pneumonia",
-        ...     score=0.92,
-        ...     source="UMLS"
-        ... )
-    """
-
-    system: str = Field(
-        ...,
-        description="Medical coding system identifier (e.g., SNOMEDCT_US, ICD10CM).",
-        json_schema_extra={"example": "SNOMEDCT_US"},
-    )
-    code: str = Field(
-        ...,
-        description="Code value within the specified system.",
-        json_schema_extra={"example": "233604007"},
-    )
-    display: Optional[str] = Field(
-        default=None,
-        description="Human-readable description of the code.",
-        json_schema_extra={"example": "Pneumonia"},
-    )
-    score: Optional[float] = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="Confidence score for code assignment (0.0-1.0).",
-        json_schema_extra={"example": 0.92},
-    )
-    source: Optional[str] = Field(
-        default=None,
-        description="Source of the code assignment (e.g., UMLS, manual).",
-        json_schema_extra={"example": "UMLS"},
-    )
 
 
 class Entity(BaseModel):
@@ -259,37 +190,6 @@ class ExtractResponse(BaseModel):
         default_factory=dict,
         description="Extraction metadata including model info and statistics.",
         json_schema_extra={"example": {"model": "transformer", "inference_time_ms": 120.5, "entity_count": 2}},
-    )
-
-
-class BatchItem(BaseModel):
-    """
-    Single item result in a batch extraction operation.
-
-    Represents the extraction result for one file in a batch processing
-    request. Used internally during batch processing.
-
-    Attributes:
-        filename: Original filename of the processed document.
-        entities: List of entities extracted from this file.
-        meta: File-specific extraction metadata.
-
-    Note:
-        This schema is used internally. API responses use :class:`BatchAckItem`.
-    """
-
-    filename: str = Field(
-        ...,
-        description="Original filename of the processed document.",
-        json_schema_extra={"example": "nota_clinica_001.pdf"},
-    )
-    entities: List[Entity] = Field(
-        default_factory=list,
-        description="Entities extracted from this file.",
-    )
-    meta: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="File-specific extraction metadata.",
     )
 
 
