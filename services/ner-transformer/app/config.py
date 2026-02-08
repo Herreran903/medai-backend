@@ -36,20 +36,20 @@ class Settings(BaseSettings):
         description="Logging level (debug, info, warning, error, critical)",
     )
 
-    # Model variant selection
-    model_variant: Literal["beto", "roberta"] = Field(
-        default="beto",
-        description="Transformer variant to use (beto or roberta)",
+    # Model variant selection (FIXED: only roberta for experiments)
+    model_variant: Literal["roberta"] = Field(
+        default="roberta",
+        description="Transformer variant to use (FIXED: only roberta for experiments)",
     )
 
     # Hugging Face model IDs
     transformer_beto_model_id: str = Field(
         default="NicolasUnivalle/beto-vm-ner-full",
-        description="Hugging Face model ID for BETO-based clinical NER",
+        description="NOT USED - BETO model disabled. Only RoBERTa is used for experiments.",
     )
     transformer_roberta_model_id: str = Field(
         default="NicolasUnivalle/roberta-vm-ner-full",
-        description="Hugging Face model ID for RoBERTa-based clinical NER",
+        description="Hugging Face model ID for RoBERTa-based clinical NER (ACTIVE)",
     )
 
     # Device configuration

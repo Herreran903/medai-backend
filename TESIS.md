@@ -59,8 +59,8 @@ El backend se implementa como un servicio REST basado en FastAPI, adoptando un e
 **C) Capa de Modelos (Estrategias de Extracción)**
 El backend integra tres estrategias:
 - **BiLSTM (TensorFlow)**: orientado a inferencia rápida
-- **Transformer (PyTorch + Hugging Face)**: orientado a mayor precisión (variantes BETO/RoBERTa)
-- **LLM (Anthropic/OpenAI)**: orientado a extracción flexible con salida estructurada (Claude/GPT)
+- **Transformer (PyTorch + Hugging Face)**: orientado a mayor precisión (RoBERTa, fijado para experimentos)
+- **LLM (OpenAI)**: orientado a extracción flexible con salida estructurada (GPT, fijado para experimentos)
 
 **D) Capa de Persistencia (MongoDB)**
 - Guarda resultados por episodio y nota
@@ -85,7 +85,7 @@ El backend utiliza una arquitectura de microservicios donde cada modelo NER se e
 │ Transformer   │      │   BiLSTM     │     │     LLM      │
 │ Port: 8001    │      │  Port: 8002   │     │  Port: 8003  │
 │ Size: ~1.8GB  │      │  Size: ~1.2GB │     │  Size: ~100MB│
-│ BETO/RoBERTa  │      │  BiLSTM-CRF   │     │ Claude/GPT   │
+│  RoBERTa      │      │  BiLSTM-CRF   │     │    GPT       │
 └───────────────┘      └───────────────┘     └──────────────┘
 ```
 
@@ -120,7 +120,7 @@ El backend utiliza una arquitectura de microservicios donde cada modelo NER se e
 #### Modelos NER
 - **Transformers**: Hugging Face Transformers + PyTorch
 - **BiLSTM**: TensorFlow/Keras (modelo local)
-- **LLM**: SDKs de Anthropic (Claude) y OpenAI (GPT)
+- **LLM**: SDKs de OpenAI (GPT) (Claude deshabilitado en experimentos)
 
 #### Procesamiento de Documentos
 - **PDF**: PyMuPDF (extracción de texto y limpieza)
@@ -193,22 +193,20 @@ En texto clínico real, existe variabilidad lingüística, abreviaturas y redacc
 | Modelo | Enfoque | Ventaja Principal | Limitación Típica | Escenario Recomendado |
 |--------|---------|-------------------|-------------------|----------------------|
 | **BiLSTM** (BiLSTM-CRF) | Modelo secuencial entrenado en dominio | Alta velocidad y operación offline | Menor flexibilidad semántica | Procesamiento intensivo con baja latencia |
-| **Transformer** (BETO/RoBERTa) | Token classification (BIO) | Mayor precisión para NER | Mayor costo computacional | Extracción "default" por calidad |
-| **LLM** (Claude/GPT) | Extracción guiada por esquema | Flexibilidad ante redacción variable | Costo y dependencia de API | Casos complejos o entidades difíciles |
+| **Transformer** (RoBERTa) | Token classification (BIO) | Mayor precisión para NER | Mayor costo computacional | Extracción "default" por calidad |
+| **LLM** (GPT) | Extracción guiada por esquema | Flexibilidad ante redacción variable | Costo y dependencia de API | Casos complejos o entidades difíciles |
 
 ### 3.3 Control de Variantes
 
-El backend soporta variantes mediante el parámetro `model_variant`:
+El backend soporta variantes mediante el parámetro `model_variant`, aunque actualmente están fijadas para los experimentos:
 
 **Para Transformers:**
-- `beto` (default): Modelo BETO (BERT en español)
-- `roberta`: Modelo RoBERTa en español
+- `roberta` (fijado): Modelo RoBERTa en español para experimentos
 
 **Para LLM:**
-- `claude` (default): Anthropic Claude Sonnet
-- `gpt`: OpenAI GPT-4o
+- `gpt` (fijado): OpenAI GPT para experimentos
 
-Esto facilita comparar modelos y sostener un proceso incremental de mejora sin cambiar el contrato de la API.
+El diseño multi-variante facilita comparar modelos y sostener un proceso incremental de mejora sin cambiar el contrato de la API. Para los experimentos de esta tesis, se fijaron las variantes para garantizar reproducibilidad.
 
 ### 3.4 Coexistencia de Frameworks
 
@@ -223,7 +221,7 @@ Esta coexistencia responde a la realidad del desarrollo: cada modelo fue entrena
 
 Para evitar recargar pesos de modelos en cada solicitud (lo cual aumenta latencia y consumo), el backend adopta un enfoque de reutilización en memoria:
 
-- **Transformers**: Se cachean por variante (beto/roberta) para que el costo de carga se pague una sola vez por variante
+- **Transformers**: Se cachean en memoria para que el costo de carga se pague una sola vez (actualmente fijado a RoBERTa)
 - **Registro central de modelos**: Actúa como fuente de verdad de extractores disponibles, reduciendo dispersión de inicialización
 - **Carga diferida**: El diseño del backend difiere la carga pesada hasta el primer uso efectivo de extracción (mejor experiencia de arranque del servicio)
 
@@ -258,7 +256,7 @@ Para evitar recargar pesos de modelos en cada solicitud (lo cual aumenta latenci
 - **Contenido**: `text` (directo) o `file` (PDF/DOCX/TXT)
 - **Selección de modelo**:
   - `model`: `lstm` | `transformer` | `llm`
-  - `model_variant`: Para transformer: `beto`/`roberta`; para llm: `claude`/`gpt`
+  - `model_variant`: Para transformer: `roberta` (fijado); para llm: `gpt` (fijado)
 - **Metadatos operativos**:
   - `episode_id`: Identificador del episodio clínico (requerido; la API rechaza si falta)
   - `note_date`: Fecha clínica de la nota (ISO 8601, requerida; la API rechaza si falta)
@@ -816,7 +814,7 @@ medai-backend/
 | **LSTM** | Long Short-Term Memory - Tipo de red neuronal recurrente |
 | **Transformer** | Arquitectura de red neuronal basada en mecanismos de atención |
 | **LLM** | Large Language Model - Modelo de Lenguaje de Gran Escala |
-| **BETO** | BERT en español - Modelo Transformer pre-entrenado en español |
+| **BETO** | BERT en español - Modelo Transformer pre-entrenado (legacy, no usado) |
 | **RoBERTa** | Robustly Optimized BERT - Variante mejorada de BERT |
 | **BiLSTM-CRF** | Bidirectional LSTM with Conditional Random Fields |
 | **BIO** | Begin-Inside-Outside - Esquema de etiquetado para NER |

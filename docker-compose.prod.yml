@@ -52,7 +52,7 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
-  # NER Transformer Service (BETO/RoBERTa)
+  # NER Transformer Service (RoBERTa ONLY - Fixed for experiments)
   # ===========================================================================
   ner-transformer:
     build:
@@ -62,7 +62,7 @@ services:
     env_file:
       - .env.prod
     environment:
-      - MODEL_VARIANT=beto
+      - MODEL_VARIANT=roberta
       - LOG_LEVEL=warning
     volumes:
       # Cache Hugging Face models to avoid re-downloading

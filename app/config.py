@@ -162,7 +162,7 @@ class Settings(BaseSettings):
     List of available extraction models.
     
     - ``lstm``: BiLSTM-CRF model trained on mechanical ventilation notes
-    - ``transformer``: Fine-tuned BETO/RoBERTa for Spanish clinical NER
+    - ``transformer``: Fine-tuned RoBERTa for Spanish clinical NER (RoBERTa only)
     - ``llm``: Large Language Model extraction via Claude or GPT APIs
     """
 
@@ -183,20 +183,17 @@ class Settings(BaseSettings):
 
     transformer_beto_model_id: Optional[str] = Field(
         default="NicolasUnivalle/beto-vm-ner-full",
-        description="Hugging Face model ID for BETO-based clinical NER.",
+        description="NOT USED - BETO model disabled. Only RoBERTa is used for experiments.",
     )
 
     transformer_beto_peft_model_id: Optional[str] = Field(
         default="NicolasUnivalle/beto-vm-ner-peft",
-        description=(
-            "DEPRECATED: PEFT adapter ID for BETO. Not used in current implementation. "
-            "BETO loads as a full model only. Retained for configuration compatibility."
-        ),
+        description="NOT USED - BETO PEFT adapter disabled. Only RoBERTa is used for experiments.",
     )
 
     transformer_roberta_model_id: Optional[str] = Field(
         default="NicolasUnivalle/roberta-vm-ner-full",
-        description="Hugging Face model ID for RoBERTa-based clinical NER.",
+        description="Hugging Face model ID for RoBERTa-based clinical NER (ACTIVE).",
     )
 
     # Microservices configuration

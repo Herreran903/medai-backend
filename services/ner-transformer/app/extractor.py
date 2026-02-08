@@ -2,23 +2,26 @@
 Transformer-Based Named Entity Recognition for Clinical Text.
 
 This module implements clinical NER using fine-tuned Spanish Transformer models
-(BETO and RoBERTa) with BIO tagging for mechanical ventilation notes.
+with BIO tagging for mechanical ventilation notes.
+
+FIXED FOR EXPERIMENTS: Only using RoBERTa variant. BETO classes are kept as
+backup but are NOT loaded or used.
 
 Architecture Context:
     The Transformer extractor is the primary NER model in MedAI, offering
     the best balance of accuracy and performance for clinical entity extraction.
 
-    Available models:
+    Active model:
 
-    - **BETO**: Spanish BERT model fine-tuned on mechanical ventilation notes
-    - **RoBERTa**: Spanish RoBERTa model with similar fine-tuning
+    - **RoBERTa**: Spanish RoBERTa model fine-tuned on mechanical ventilation notes (ACTIVE)
+    - **BETO**: NOT USED - Kept as backup only
 
-    Both models are hosted on Hugging Face and loaded via the Transformers library.
+    The active model is hosted on Hugging Face and loaded via the Transformers library.
 
 Model Architecture:
-    The extractors use Hugging Face ``AutoModelForTokenClassification`` with:
+    The extractor uses Hugging Face ``AutoModelForTokenClassification`` with:
 
-    - Pre-trained Spanish language model (BETO or RoBERTa)
+    - Pre-trained Spanish RoBERTa language model
     - Token classification head for BIO tag prediction
     - Subword tokenization with offset mapping for span reconstruction
 
@@ -35,24 +38,20 @@ Design Pattern:
     The module follows the Strategy pattern with a Facade:
 
     - :class:`BaseTransformerExtractor`: Core extraction logic
-    - :class:`BETOTransformerExtractor`: BETO-specific configuration
-    - :class:`RobertaTransformerExtractor`: RoBERTa-specific configuration
-    - :class:`TransformerExtractor`: Facade for automatic variant selection
+    - :class:`BETOTransformerExtractor`: BETO-specific configuration (NOT USED)
+    - :class:`RobertaTransformerExtractor`: RoBERTa-specific configuration (ACTIVE)
+    - :class:`TransformerExtractor`: Facade (fixed to RoBERTa)
 
 Model Configuration:
-    Models are configured via environment variables or :class:`app.config.Settings`:
+    Model is configured via environment variables or :class:`app.config.Settings`:
 
-    - ``TRANSFORMER_BETO_MODEL_ID``: Hugging Face ID for BETO model
-    - ``TRANSFORMER_ROBERTA_MODEL_ID``: Hugging Face ID for RoBERTa model
+    - ``TRANSFORMER_ROBERTA_MODEL_ID``: Hugging Face ID for RoBERTa model (ACTIVE)
+    - ``TRANSFORMER_BETO_MODEL_ID``: NOT USED
 
 Usage:
-    >>> from app.models.transformer import TransformerExtractor
-    >>> # Auto-detect variant from model ID
+    >>> from app.extractor import TransformerExtractor
     >>> extractor = TransformerExtractor()
     >>> entities = extractor.predict("Paciente con FiO2 60%, PEEP 8 cmH2O")
-    >>>
-    >>> # Explicit variant selection
-    >>> extractor = TransformerExtractor(model_id="NicolasUnivalle/roberta-vm-ner-full")
 
 See Also:
     - :mod:`app.services.pipeline` for extraction orchestration
@@ -331,7 +330,7 @@ class BaseTransformerExtractor:
 
 class BETOTransformerExtractor(BaseTransformerExtractor):
     """
-    BETO-based clinical NER extractor.
+    NOT USED - Only using RoBERTa for experiments. Kept as backup.
 
     BETO (Bidirectional Encoder Representations from Transformers for Spanish)
     is a Spanish BERT model. This extractor uses a version fine-tuned on
@@ -345,15 +344,9 @@ class BETOTransformerExtractor(BaseTransformerExtractor):
     Attributes:
         Inherits all attributes from :class:`BaseTransformerExtractor`.
 
-    Example:
-        >>> extractor = BETOTransformerExtractor()
-        >>> entities = extractor.predict("PEEP 10 cmH2O")
-        >>> print(entities[0]["type"])
-        'PEEP'
-
     See Also:
-        - :class:`RobertaTransformerExtractor` for RoBERTa variant
-        - :class:`TransformerExtractor` for automatic variant selection
+        - :class:`RobertaTransformerExtractor` for the active RoBERTa variant
+        - :class:`TransformerExtractor` for facade (fixed to RoBERTa)
     """
 
     def __init__(
@@ -481,42 +474,24 @@ class TransformerExtractor:
     """
     Facade class for Transformer-based clinical NER extraction.
 
-    This class provides a unified interface to BETO and RoBERTa extractors,
-    automatically selecting the appropriate variant based on the model ID.
+    FIXED FOR EXPERIMENTS: Always uses RoBERTa. BETO is disabled.
 
-    The facade pattern simplifies client code by:
-
-    - Auto-detecting model variant from model ID
-    - Providing consistent interface regardless of variant
-    - Handling default model selection from configuration
-
-    Variant Detection:
-        The variant is detected from the model ID string:
-
-        - Contains "roberta" → RoBERTa variant
-        - Contains "beto" or "bert" → BETO variant
-        - Default → BETO variant
+    This class provides a unified interface for Transformer extraction,
+    fixed to RoBERTa for all experiment runs.
 
     Attributes:
         model_id: Resolved Hugging Face model identifier.
         max_len: Maximum sequence length.
         device: PyTorch device string.
-        variant: Detected variant ("beto" or "roberta").
-        extractor: Underlying variant-specific extractor instance.
+        variant: Fixed to "roberta".
+        extractor: Underlying RobertaTransformerExtractor instance.
 
     Example:
-        >>> # Auto-detect BETO from default model
         >>> extractor = TransformerExtractor()
-        >>> extractor.variant
-        'beto'
-        >>>
-        >>> # Auto-detect RoBERTa from model ID
-        >>> extractor = TransformerExtractor(model_id="NicolasUnivalle/roberta-vm-ner-full")
         >>> extractor.variant
         'roberta'
 
     See Also:
-        - :class:`BETOTransformerExtractor` for BETO-specific usage
         - :class:`RobertaTransformerExtractor` for RoBERTa-specific usage
     """
 
@@ -528,66 +503,40 @@ class TransformerExtractor:
         device: Optional[str] = None,
     ) -> None:
         """
-        Initialize the Transformer extractor facade.
+        Initialize the Transformer extractor facade (fixed to RoBERTa).
 
         Args:
             model_id: Hugging Face model ID. If None, uses environment variable
-                ``HF_MODEL_ID`` or defaults to BETO model.
+                ``HF_MODEL_ID`` or defaults to RoBERTa model.
             max_len: Maximum sequence length for tokenization.
             device: PyTorch device string ("cuda", "cpu").
 
         Note:
-            The underlying extractor is instantiated based on variant detection.
             Model weights are downloaded on first use if not cached.
         """
         self.model_id = model_id or os.getenv(
-            "HF_MODEL_ID", "NicolasUnivalle/beto-vm-ner-full"
+            "HF_MODEL_ID", "NicolasUnivalle/roberta-vm-ner-full"
         )
 
         self.max_len = int(max_len)
         self.device = device
 
-        # Detect variant from model ID
-        self.variant = self._detect_variant(self.model_id)
+        # FIXED: Always use RoBERTa for experiments
+        self.variant = "roberta"
 
-        # Initialize appropriate extractor
-        if self.variant == "roberta":
-            self.extractor = RobertaTransformerExtractor(
-                model_id=self.model_id,
-                max_len=self.max_len,
-                device=self.device,
-            )
-        else:
-            self.extractor = BETOTransformerExtractor(
-                model_id=self.model_id,
-                max_len=self.max_len,
-                device=self.device,
-            )
+        self.extractor = RobertaTransformerExtractor(
+            model_id=self.model_id,
+            max_len=self.max_len,
+            device=self.device,
+        )
 
-        logger.info("TransformerExtractor initialized with variant: %s", self.variant)
-
-    def _detect_variant(self, model_id: str) -> str:
-        """
-        Detect model variant from model ID string.
-
-        Args:
-            model_id: Hugging Face model identifier.
-
-        Returns:
-            Variant string: "roberta" or "beto".
-        """
-        mid = model_id.lower()
-        if "roberta" in mid:
-            return "roberta"
-        if "beto" in mid or "bert" in mid:
-            return "beto"
-        return "beto"
+        logger.info("TransformerExtractor initialized (FIXED: RoBERTa only)")
 
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
         Extract clinical entities from text.
 
-        Delegates to the underlying variant-specific extractor.
+        Delegates to the underlying RoBERTa extractor.
 
         Args:
             text: Clinical note text to process.

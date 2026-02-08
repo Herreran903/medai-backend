@@ -2,7 +2,9 @@
 Transformer NER Microservice - FastAPI Application.
 
 This microservice provides clinical Named Entity Recognition using
-fine-tuned Spanish Transformer models (BETO/RoBERTa) via a REST API.
+a fine-tuned Spanish RoBERTa model via a REST API.
+
+FIXED FOR EXPERIMENTS: Only RoBERTa variant is used. BETO is disabled.
 
 Endpoints:
     - POST /predict: Extract entities from clinical text
@@ -52,7 +54,7 @@ app = FastAPI(
     version="1.0.0",
     description=(
         "Clinical Named Entity Recognition microservice using fine-tuned Spanish "
-        "Transformer models (BETO/RoBERTa). Extracts structured medical entities "
+        "RoBERTa model (FIXED for experiments). Extracts structured medical entities "
         "from Spanish clinical notes with focus on mechanical ventilation parameters."
     ),
 )
@@ -72,8 +74,7 @@ async def startup_event():
     """
     Initialize Transformer extractor at startup.
 
-    Loads the specified variant (BETO/RoBERTa) from Hugging Face Hub
-    and moves model to appropriate device (CPU/CUDA).
+    FIXED: Always loads RoBERTa model from Hugging Face Hub.
     """
     global _extractor, _model_loaded
 
@@ -82,14 +83,11 @@ async def startup_event():
         _model_loaded = False
         return
 
-    logger.info(f"Starting Transformer NER service (variant: {settings.model_variant})")
+    logger.info("Starting Transformer NER service (FIXED: RoBERTa only)")
 
     try:
-        # Determine model ID based on variant
-        if settings.model_variant == "roberta":
-            model_id = settings.transformer_roberta_model_id
-        else:
-            model_id = settings.transformer_beto_model_id
+        # FIXED: Always use RoBERTa for experiments
+        model_id = settings.transformer_roberta_model_id
 
         logger.info(f"Loading Transformer model: {model_id}")
         logger.info(f"Device: {settings.device or 'auto-detect'}")
@@ -195,7 +193,7 @@ def readyz():
     tags=["Extraction"],
     summary="Extract clinical entities from text",
     description=(
-        "Processes clinical text using the configured Transformer variant (BETO/RoBERTa) "
+        "Processes clinical text using RoBERTa (FIXED for experiments) "
         "and returns structured medical entities with character offsets."
     ),
 )

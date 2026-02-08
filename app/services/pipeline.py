@@ -112,8 +112,8 @@ async def extract_from_text(
 
         model_variant: Model-specific variant selection:
 
-            - For ``transformer``: "beto" (default) or "roberta"
-            - For ``llm``: "claude" (default) or "gpt"
+            - For ``transformer``: "roberta" (fixed for experiments)
+            - For ``llm``: "gpt" (fixed for experiments)
             - Ignored for ``lstm``
 
         normalize: Whether to request terminology normalization from the NER service.

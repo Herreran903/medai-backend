@@ -28,7 +28,7 @@ API Design:
 
 Supported Models:
     - ``lstm``: BiLSTM-CRF model for fast inference
-    - ``transformer``: Fine-tuned BETO/RoBERTa (variants: beto, roberta)
+    - ``transformer``: Fine-tuned RoBERTa (FIXED: only roberta)
     - ``llm``: LLM-based extraction (variants: claude, gpt)
 
 Integration Points:
@@ -108,7 +108,7 @@ and laboratory values. Results are persisted to MongoDB for later retrieval.
 
 **Model Selection:**
 - `lstm`: Fast inference, moderate accuracy
-- `transformer`: Best accuracy (variants: `beto`, `roberta`)
+- `transformer`: Best accuracy (FIXED: `roberta` only)
 - `llm`: Highest flexibility (variants: `claude`, `gpt`)
 
 **Normalization:**
@@ -132,7 +132,7 @@ async def extract(
     ),
     model_variant: Optional[str] = Form(
         None,
-        description="Model variant: `beto`/`roberta` for transformer, `claude`/`gpt` for llm.",
+        description="Model variant: `roberta` for transformer (fixed), `gpt` for llm (fixed).",
     ),
     episode_id: str = Form(
         ...,
@@ -250,7 +250,7 @@ async def extract_batch(
     ),
     model_variant: Optional[str] = Form(
         None,
-        description="Model variant: `beto`/`roberta` for transformer, `claude`/`gpt` for llm.",
+        description="Model variant: `roberta` for transformer (fixed), `gpt` for llm (fixed).",
     ),
     save: Optional[bool] = Form(
         True,

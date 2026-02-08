@@ -13,7 +13,7 @@ MedAI Backend is a production-grade REST API service that provides clinical Name
 
 ### Key Features
 
-- **Multiple NER Models**: Choose from BiLSTM, Transformer (BETO/RoBERTa), or LLM-based extraction
+- **Multiple NER Models**: Choose from BiLSTM, Transformer (RoBERTa), or LLM-based (GPT) extraction
 - **Microservices Architecture**: Independent services for each model with isolated dependencies
 - **Entity Normalization**: UMLS-based normalization to SNOMED-CT/ICD-10 (module available; currently disabled in gateway)
 - **Batch Processing**: Process multiple clinical notes in a single request
@@ -39,7 +39,7 @@ The backend uses a microservices architecture where each NER model runs in an in
 │ Transformer   │      │   BiLSTM     │     │     LLM      │
 │ Port: 8001    │      │  Port: 8002   │     │  Port: 8003  │
 │ Size: ~1.8GB  │      │  Size: ~1.2GB │     │  Size: ~100MB│
-│ BETO/RoBERTa  │      │  BiLSTM-CRF   │     │ Claude/GPT   │
+│  RoBERTa      │      │  BiLSTM-CRF   │     │    GPT       │
 └───────────────┘      └───────────────┘     └──────────────┘
 ```
 
@@ -48,9 +48,9 @@ The backend uses a microservices architecture where each NER model runs in an in
 | Service | Port | Description | Image Size | Startup Time |
 |---------|------|-------------|------------|--------------|
 | **Gateway** | 8000 | API REST, routing, MongoDB | ~200MB | <2s |
-| **Transformer** | 8001 | BETO/RoBERTa NER | ~1.8GB | 5-30s |
+| **Transformer** | 8001 | RoBERTa NER (fixed) | ~1.8GB | 5-30s |
 | **BiLSTM** | 8002 | BiLSTM-CRF NER | ~1.2GB | 5-10s |
-| **LLM** | 8003 | Claude/GPT NER | ~100MB | <1s |
+| **LLM** | 8003 | GPT NER (fixed) | ~100MB | <1s |
 | **MongoDB** | 27017 | Database | - | <5s |
 
 ### Microservices Benefits
@@ -114,8 +114,8 @@ curl -X POST "http://localhost:8000/extract" \
 - `text` or `file`: Clinical note text or file (PDF/DOCX/TXT)
 - `model`: Model type (`lstm`, `transformer`, or `llm`)
 - `model_variant`: Model variant (optional)
-  - For `transformer`: `beto` (default) or `roberta`
-  - For `llm`: `claude` (default) or `gpt`
+  - For `transformer`: `roberta` (fixed for experiments)
+  - For `llm`: `gpt` (fixed for experiments)
 - `episode_id`: Episode identifier (required; API returns 400 if missing)
 - `note_date`: Clinical note date (ISO 8601, required; API returns 400 if missing)
 - `save`: Save result (default: `true`)
@@ -245,15 +245,15 @@ Configuration is managed through environment variables. Create a `.env` file bas
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `TRANSFORMER_BETO_MODEL_ID` | BETO model Hugging Face ID | NicolasUnivalle/beto-vm-ner-full |
-| `TRANSFORMER_ROBERTA_MODEL_ID` | RoBERTa model Hugging Face ID | NicolasUnivalle/roberta-vm-ner-full |
+| `TRANSFORMER_BETO_MODEL_ID` | NOT USED - BETO disabled (legacy) | NicolasUnivalle/beto-vm-ner-full |
+| `TRANSFORMER_ROBERTA_MODEL_ID` | RoBERTa model Hugging Face ID (ACTIVE) | NicolasUnivalle/roberta-vm-ner-full |
 
 ### API Keys (optional)
 
 | Variable | Description | Required For |
 |----------|-------------|--------------|
 | `UMLS_APIKEY` | UMLS API key for normalization | Entity normalization (module; gateway disabled) |
-| `ANTHROPIC_API_KEY` | Anthropic API key for Claude | LLM model with Claude |
+| `ANTHROPIC_API_KEY` | NOT USED - Claude disabled (legacy) | Legacy (Claude) |
 | `OPENAI_API_KEY` | OpenAI API key for GPT | LLM model with GPT |
 
 ## Model Selection
@@ -270,42 +270,22 @@ curl -X POST "http://localhost:8000/extract" \
 ```
 
 ### Transformer (Recommended)
-Best accuracy for clinical NER. Supports BETO and RoBERTa variants.
+Best accuracy for clinical NER. Fixed to RoBERTa for experiments.
 
 ```bash
-# BETO (default)
 curl -X POST "http://localhost:8000/extract" \
   -F "model=transformer" \
-  -F "model_variant=beto" \
-  -F "text=Paciente con FiO2 60%" \
-  -F "episode_id=EP-001" \
-  -F "note_date=2024-01-15T10:00:00"
-
-# RoBERTa
-curl -X POST "http://localhost:8000/extract" \
-  -F "model=transformer" \
-  -F "model_variant=roberta" \
   -F "text=Paciente con FiO2 60%" \
   -F "episode_id=EP-001" \
   -F "note_date=2024-01-15T10:00:00"
 ```
 
 ### LLM
-Highest flexibility with structured outputs. Requires API keys.
+Highest flexibility with structured outputs. Fixed to GPT for experiments. Requires API key.
 
 ```bash
-# Claude (default)
 curl -X POST "http://localhost:8000/extract" \
   -F "model=llm" \
-  -F "model_variant=claude" \
-  -F "text=Paciente con FiO2 60%" \
-  -F "episode_id=EP-001" \
-  -F "note_date=2024-01-15T10:00:00"
-
-# GPT
-curl -X POST "http://localhost:8000/extract" \
-  -F "model=llm" \
-  -F "model_variant=gpt" \
   -F "text=Paciente con FiO2 60%" \
   -F "episode_id=EP-001" \
   -F "note_date=2024-01-15T10:00:00"
@@ -352,7 +332,7 @@ Runs a 2-3 minute validation to verify:
 Runs a 5-10 minute test suite covering:
 - Health checks for all services
 - Single and batch extraction
-- All model variants (BiLSTM, Transformer BETO/RoBERTa, LLM Claude/GPT)
+- All models (BiLSTM, Transformer RoBERTa, LLM GPT)
 - Document processing (PDF/DOCX/TXT)
 - Result retrieval
 - Deduplication
@@ -505,7 +485,7 @@ medai-backend/
 │       ├── text_utils.py      # Document text extraction
 │       └── utils.py           # Shared utilities
 ├── services/                  # NER microservices
-│   ├── ner-transformer/       # Transformer service (BETO/RoBERTa)
+│   ├── ner-transformer/       # Transformer service (RoBERTa only)
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   └── app/
@@ -517,7 +497,7 @@ medai-backend/
 │   │   ├── requirements.txt
 │   │   ├── app/
 │   │   └── models/            # BiLSTM model files
-│   └── ner-llm/               # LLM service (Claude/GPT)
+│   └── ner-llm/               # LLM service (GPT only)
 │       ├── Dockerfile
 │       ├── requirements.txt
 │       └── app/
