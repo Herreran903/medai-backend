@@ -7,21 +7,6 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
-# ==============================================================================
-# Medical Coding Schemas
-# ==============================================================================
-
-
-class Code(BaseModel):
-    """Standardized medical code associated with a clinical entity."""
-
-    system: str = Field(..., description="Medical coding system identifier")
-    code: str = Field(..., description="Code value within the specified system")
-    display: Optional[str] = Field(default=None, description="Human-readable description")
-    score: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Confidence score")
-    source: Optional[str] = Field(default=None, description="Source of code assignment")
-
-
 class Entity(BaseModel):
     """Clinical entity extracted from medical text."""
 

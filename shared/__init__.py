@@ -1,7 +1,6 @@
 """Shared module for MedAI microservices."""
 
 from shared.schemas import (
-    Code,
     Entity,
     ErrorDetail,
     ErrorResponse,
@@ -11,7 +10,6 @@ from shared.schemas import (
 )
 
 __all__ = [
-    "Code",
     "Entity",
     "ErrorDetail",
     "ErrorResponse",

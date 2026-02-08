@@ -105,9 +105,8 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description=(
             "MedAI Backend API for clinical entity extraction from medical notes. "
-            "Supports multiple NER models including LSTM, Transformer (BETO/RoBERTa), "
-            "and LLM-based extraction. UMLS normalization is available but "
-            "currently disabled in the gateway flow."
+            "Supports multiple NER models including LSTM, Transformer (RoBERTa), "
+            "and LLM-based extraction."
         ),
         docs_url="/docs",
         redoc_url="/redoc",

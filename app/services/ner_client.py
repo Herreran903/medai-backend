@@ -104,10 +104,6 @@ class NERClient:
 
     Example:
         >>> async with NERClient(settings) as client:
-        ...     # Check service health
-        ...     is_ready = await client.health_check("transformer")
-        ...
-        ...     # Extract entities
         ...     result = await client.predict(
         ...         model="transformer",
         ...         text="Paciente con FiO2 60%",
@@ -295,46 +291,3 @@ class NERClient:
                 f"{model} service error ({e.response.status_code}): {error_detail}"
             ) from e
 
-    async def health_check(self, model: str) -> bool:
-        """
-        Check if NER service is healthy and ready to accept requests.
-
-        Calls the service's /readyz endpoint to verify:
-        - Service is running
-        - Model is loaded
-        - Service is ready to process requests
-
-        Args:
-            model: Model identifier (transformer, lstm, llm)
-
-        Returns:
-            bool: True if service is healthy and ready, False otherwise
-
-        Example:
-            >>> is_ready = await client.health_check("transformer")
-            >>> if is_ready:
-            ...     result = await client.predict(model="transformer", text="...")
-        """
-        if not self._client:
-            logger.warning("Health check called but client not initialized")
-            return False
-
-        try:
-            service_url = self._get_service_url(model)
-            endpoint = f"{service_url}/readyz"
-
-            response = await self._client.get(endpoint, timeout=5.0)
-            is_healthy = response.status_code == 200
-
-            if is_healthy:
-                logger.debug(f"{model} service is healthy")
-            else:
-                logger.warning(
-                    f"{model} service not ready: {response.status_code} - {response.text[:100]}"
-                )
-
-            return is_healthy
-
-        except Exception as e:
-            logger.warning(f"Health check failed for {model}: {type(e).__name__}: {e}")
-            return False
