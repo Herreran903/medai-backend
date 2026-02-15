@@ -2,7 +2,7 @@
 BiLSTM NER Microservice - FastAPI Application.
 
 This microservice provides clinical Named Entity Recognition using
-a BiLSTM-CRF model trained on Spanish mechanical ventilation notes.
+a BiLSTM model (no CRF layer) trained on Spanish mechanical ventilation notes.
 
 Endpoints:
     - POST /predict: Extract entities from clinical text
@@ -51,7 +51,7 @@ app = FastAPI(
     title="MedAI BiLSTM NER Service",
     version="1.0.0",
     description=(
-        "Clinical Named Entity Recognition microservice using BiLSTM-CRF model. "
+        "Clinical Named Entity Recognition microservice using BiLSTM model (no CRF layer). "
         "Extracts structured medical entities from Spanish clinical notes "
         "with focus on mechanical ventilation parameters. Optimized for fast inference."
     ),
@@ -72,7 +72,7 @@ async def startup_event():
     """
     Initialize BiLSTM extractor at startup.
 
-    Loads the BiLSTM-CRF model from local files (model.keras, vocabularies, config).
+    Loads the BiLSTM model from local files (model.keras, vocabularies, config).
     """
     global _extractor, _model_loaded
 
@@ -180,7 +180,7 @@ def readyz():
     tags=["Extraction"],
     summary="Extract clinical entities from text",
     description=(
-        "Processes clinical text using BiLSTM-CRF model and returns structured "
+        "Processes clinical text using BiLSTM model and returns structured "
         "medical entities with character offsets."
     ),
 )

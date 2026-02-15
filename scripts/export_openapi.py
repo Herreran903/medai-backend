@@ -6,6 +6,8 @@ This script exports OpenAPI specifications from all MedAI services:
 - Gateway API (public API)
 - NER Transformer microservice
 - NER LSTM microservice
+- NER LSTM-CRF microservice
+- NER CRF microservice
 - NER LLM microservice
 
 Purpose:
@@ -21,6 +23,8 @@ Output:
     - ``gateway.json``: Public API (POST /extract, GET /notes, etc.)
     - ``ner-transformer.json``: Transformer NER service (POST /predict)
     - ``ner-bilstm.json``: BiLSTM NER service (POST /predict)
+    - ``ner-bilstm-crf.json``: BiLSTM-CRF NER service (POST /predict)
+    - ``ner-crf.json``: CRF NER service (POST /predict)
     - ``ner-llm.json``: LLM NER service (POST /predict)
 
     Also creates ``openapi.json`` in root for backward compatibility.
@@ -53,10 +57,12 @@ Example:
     >>> cat openapi/gateway.json | jq '.info.title'
     "MedAI Backend"
 
-See Also:
+    See Also:
     - :mod:`app.main` for Gateway API definition
     - :mod:`services.ner-transformer.app.main` for Transformer service
     - :mod:`services.ner-bilstm.app.main` for BiLSTM service
+    - :mod:`services.ner-bilstm-crf.app.main` for BiLSTM-CRF service
+    - :mod:`services.ner-crf.app.main` for CRF service
     - :mod:`services.ner-llm.app.main` for LLM service
 """
 
@@ -156,6 +162,8 @@ def main() -> int:
        - Gateway API (app/main.py)
        - NER Transformer (services/ner-transformer/app/main.py)
        - NER BiLSTM (services/ner-bilstm/app/main.py)
+       - NER BiLSTM-CRF (services/ner-bilstm-crf/app/main.py)
+       - NER CRF (services/ner-crf/app/main.py)
        - NER LLM (services/ner-llm/app/main.py)
     4. Creates backward-compatible openapi.json (gateway schema)
 
@@ -167,6 +175,8 @@ def main() -> int:
         - ``openapi/gateway.json``: Gateway API schema
         - ``openapi/ner-transformer.json``: Transformer service schema
         - ``openapi/ner-bilstm.json``: BiLSTM service schema
+        - ``openapi/ner-bilstm-crf.json``: BiLSTM-CRF service schema
+        - ``openapi/ner-crf.json``: CRF service schema
         - ``openapi/ner-llm.json``: LLM service schema
         - ``openapi.json``: Gateway schema (backward compatibility)
 
@@ -205,6 +215,18 @@ def main() -> int:
             "module": "app.main",
             "root": repo_root / "services" / "ner-bilstm",
             "description": "LSTM NER Service",
+        },
+        {
+            "name": "ner-bilstm-crf",
+            "module": "app.main",
+            "root": repo_root / "services" / "ner-bilstm-crf",
+            "description": "LSTM-CRF NER Service",
+        },
+        {
+            "name": "ner-crf",
+            "module": "app.main",
+            "root": repo_root / "services" / "ner-crf",
+            "description": "CRF NER Service",
         },
         {
             "name": "ner-llm",

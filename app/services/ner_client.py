@@ -2,7 +2,7 @@
 HTTP Client for NER Microservices Communication.
 
 This module provides an async HTTP client for the API gateway to communicate
-with NER microservices (Transformer, BiLSTM, LLM). It implements:
+with NER microservices (Transformer, BiLSTM, BiLSTM-CRF, CRF, LLM). It implements:
 
 - Request/response serialization using shared schemas
 - Automatic retry with exponential backoff
@@ -154,7 +154,7 @@ class NERClient:
         Map model name to NER service URL.
 
         Args:
-            model: Model identifier (transformer, lstm, llm)
+            model: Model identifier (transformer, lstm, lstm_crf, crf, llm)
 
         Returns:
             str: Service base URL (e.g., "http://ner-transformer:8001")
@@ -165,7 +165,9 @@ class NERClient:
         url_map = {
             "transformer": self.settings.ner_transformer_url,
             "lstm": self.settings.ner_lstm_url,
+            "lstm_crf": self.settings.ner_lstm_crf_url,
             "llm": self.settings.ner_llm_url,
+            "crf": self.settings.ner_crf_url,
         }
 
         if model not in url_map:
@@ -201,7 +203,7 @@ class NERClient:
         network errors with exponential backoff.
 
         Args:
-            model: Model identifier (transformer, lstm, llm)
+            model: Model identifier (transformer, lstm, lstm_crf, crf, llm)
             text: Input clinical text to process
             model_variant: Optional model variant (roberta, gpt; both fixed)
             normalize: Whether to apply UMLS normalization
@@ -290,4 +292,3 @@ class NERClient:
             raise NERServiceResponseError(
                 f"{model} service error ({e.response.status_code}): {error_detail}"
             ) from e
-

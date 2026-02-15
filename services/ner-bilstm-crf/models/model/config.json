@@ -1,0 +1,8 @@
+{
+  "max_len": 1497,
+  "pad_id": 0,
+  "n_tags": 57,
+  "formats": {
+    "saved_model": "saved_model"
+  }
+}

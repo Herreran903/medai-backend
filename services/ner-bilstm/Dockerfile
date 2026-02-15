@@ -1,13 +1,13 @@
 # ==============================================================================
 # MedAI BiLSTM NER Service - Dockerfile
 # ==============================================================================
-# TensorFlow-based image for BiLSTM NER service (BiLSTM-CRF).
+# Keras v3 + TensorFlow backend image for BiLSTM NER service (no CRF layer).
 # Model files are included in the image for fast startup.
 #
-# Image size: ~1.2GB (TensorFlow + model files)
+# Image size: ~1GB (TensorFlow + model files)
 # Startup time: 5-10s (model loading from disk)
 
-FROM python:3.11-slim
+FROM python:3.12.10-slim
 
 # Install system dependencies for TensorFlow
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Force Keras to use the TensorFlow backend
+ENV KERAS_BACKEND=tensorflow
+
 # Install Python dependencies
 COPY services/ner-bilstm/requirements.txt ./
 RUN pip install --upgrade pip && \
@@ -23,9 +26,6 @@ RUN pip install --upgrade pip && \
 
 # Copy service code
 COPY services/ner-bilstm/app ./app
-
-# Copy CRF wrapper (required for loading CRF models)
-COPY services/ner-bilstm/mwrapper.py ./
 
 # Copy model files (LSTM model weights and vocabularies)
 COPY services/ner-bilstm/models ./models

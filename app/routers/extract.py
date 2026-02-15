@@ -27,7 +27,9 @@ API Design:
     - JSON responses with extraction results or acknowledgments
 
 Supported Models:
-    - ``lstm``: BiLSTM-CRF model for fast inference
+    - ``lstm``: BiLSTM model (no CRF layer)
+    - ``lstm_crf``: BiLSTM-CRF model (Viterbi decoding)
+    - ``crf``: CRF model (sklearn-crfsuite)
     - ``transformer``: Fine-tuned RoBERTa (FIXED: only roberta)
     - ``llm``: LLM-based extraction (FIXED: only gpt)
 
@@ -107,7 +109,9 @@ and laboratory values. Results are persisted to MongoDB for later retrieval.
 - Word documents (.docx)
 
 **Model Selection:**
-- `lstm`: Fast inference, moderate accuracy
+- `lstm`: Fast inference (no CRF)
+- `lstm_crf`: BiLSTM-CRF (Viterbi decoding)
+- `crf`: Lightweight CRF (sklearn-crfsuite)
 - `transformer`: Best accuracy (FIXED: `roberta` only)
 - `llm`: Highest flexibility (FIXED: `gpt` only)
 
@@ -128,7 +132,7 @@ async def extract(
     ),
     model: str = Form(
         ...,
-        description="Extraction model identifier: `lstm`, `transformer`, or `llm`.",
+        description="Extraction model identifier: `lstm`, `lstm_crf`, `crf`, `transformer`, or `llm`.",
     ),
     model_variant: Optional[str] = Form(
         None,
@@ -246,7 +250,7 @@ async def extract_batch(
     ),
     model: str = Form(
         ...,
-        description="Extraction model identifier: `lstm`, `transformer`, or `llm`.",
+        description="Extraction model identifier: `lstm`, `lstm_crf`, `crf`, `transformer`, or `llm`.",
     ),
     model_variant: Optional[str] = Form(
         None,

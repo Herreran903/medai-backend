@@ -1,0 +1,16 @@
+# ==============================================================================
+# MedAI CRF NER Service Dependencies
+# ==============================================================================
+# sklearn-crfsuite-based CRF inference service.
+
+# --- Web Framework & API ---
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# --- Data Validation ---
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# --- ML / CRF ---
+sklearn-crfsuite>=0.3.6
+

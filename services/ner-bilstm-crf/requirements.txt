@@ -1,0 +1,30 @@
+# ==============================================================================
+# MedAI LSTM NER Service Dependencies
+# ==============================================================================
+# TensorFlow-based dependencies for LSTM NER service.
+# Includes platform-specific TensorFlow builds.
+
+# --- Web Framework & API ---
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# --- Data Validation ---
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# --- TensorFlow & Keras ---
+# Using TensorFlow 2.15.x for compatibility with tensorflow-addons
+# Note: tensorflow-addons requires Python 3.10 (not 3.11)
+tensorflow==2.15.1 ; platform_system == "Linux" and platform_machine == "x86_64"
+tensorflow-aarch64==2.15.0 ; platform_system == "Linux" and platform_machine == "aarch64"
+tensorflow==2.15.1 ; sys_platform == "darwin"
+keras<3.0  # TensorFlow 2.15 uses Keras 2.x
+numpy==1.26.4  # Pinned for TensorFlow compatibility
+
+# --- TensorFlow Addons (for CRF layer) ---
+# Note: Not available for ARM64, only needed for training (not for inference)
+# For inference, CRF layer is already in saved model
+# tensorflow-addons==0.23.0  # Commented out - not needed for inference
+
+# NOTE: No PyTorch (Transformer service only)
+# NOTE: No LLM API clients (LLM service only)

@@ -14,13 +14,17 @@ Architecture Context:
 
     Actual model instances run in separate NER microservices:
     - ``lstm``: NER BiLSTM Service (port 8002)
+    - ``lstm_crf``: NER BiLSTM-CRF Service (port 8005)
     - ``transformer``: NER Transformer Service (port 8001)
     - ``llm``: NER LLM Service (port 8003)
+    - ``crf``: NER CRF Service (port 8004)
 
 Registered Models:
-    - ``lstm``: BiLSTM-CRF model for fast inference on clinical text
+    - ``lstm``: BiLSTM model for fast inference on clinical text
+    - ``lstm_crf``: BiLSTM-CRF model (Viterbi decoding)
     - ``transformer``: Fine-tuned Spanish RoBERTa (fixed)
     - ``llm``: Large Language Model extraction (GPT fixed)
+    - ``crf``: sklearn-crfsuite CRF model (pre-trained)
 
 Usage:
     >>> from app.services.registry import MODEL_REGISTRY
@@ -39,8 +43,10 @@ from typing import Dict
 
 MODEL_REGISTRY: Dict[str, None] = {
     "lstm": None,
+    "lstm_crf": None,
     "transformer": None,
     "llm": None,
+    "crf": None,
 }
 """
 Central registry of valid model identifiers (microservices mode).
@@ -50,7 +56,10 @@ Used for validation only - actual inference is performed by NER microservices.
 
 Registered Models:
     ``lstm``:
-        BiLSTM-CRF model - runs in NER BiLSTM Service (port 8002)
+        BiLSTM model - runs in NER BiLSTM Service (port 8002)
+
+    ``lstm_crf``:
+        BiLSTM-CRF model - runs in NER BiLSTM-CRF Service (port 8005)
 
     ``transformer``:
         Fine-tuned Spanish RoBERTa - runs in NER Transformer Service (port 8001)
@@ -59,6 +68,9 @@ Registered Models:
     ``llm``:
         Large Language Model extraction (GPT) - runs in NER LLM Service (port 8003)
         Variants: "gpt" (fixed)
+
+    ``crf``:
+        CRF model - runs in NER CRF Service (port 8004)
 
 Example:
     >>> # Validate model name
@@ -69,5 +81,5 @@ Example:
     >>> # Get all available models
     >>> available_models = list(MODEL_REGISTRY.keys())
     >>> print(available_models)
-    ['lstm', 'transformer', 'llm']
+    ['lstm', 'lstm_crf', 'transformer', 'llm', 'crf']
 """

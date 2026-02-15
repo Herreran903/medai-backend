@@ -13,7 +13,9 @@
 # Services:
 #   - gateway: API Gateway (FastAPI, no ML dependencies)
 #   - ner-transformer: Transformer NER Service (PyTorch + HuggingFace)
-#   - ner-bilstm: BiLSTM NER Service (TensorFlow)
+#   - ner-bilstm: BiLSTM NER Service (Keras v3 + TensorFlow backend)
+#   - ner-bilstm-crf: BiLSTM-CRF NER Service (TensorFlow)
+#   - ner-crf: CRF NER Service (sklearn-crfsuite)
 #   - ner-llm: LLM NER Service (Anthropic/OpenAI clients)
 #   - mongo: MongoDB database (disabled by default, enable with override)
 
@@ -36,13 +38,17 @@ services:
       # Service URLs (Docker Compose service names)
       - NER_TRANSFORMER_URL=http://ner-transformer:8001
       - NER_LSTM_URL=http://ner-bilstm:8002
+      - NER_LSTM_CRF_URL=http://ner-bilstm-crf:8005
       - NER_LLM_URL=http://ner-llm:8003
+      - NER_CRF_URL=http://ner-crf:8004
 
       # Logging (production level)
       - LOG_LEVEL=warning
     depends_on:
       - ner-transformer
       - ner-bilstm
+      - ner-bilstm-crf
+      - ner-crf
       - ner-llm
     networks:
       - medai-network
@@ -72,13 +78,55 @@ services:
     # No published ports - internal network only
 
   # ===========================================================================
-  # NER BiLSTM Service (BiLSTM-CRF)
+  # NER BiLSTM Service (no CRF)
   # ===========================================================================
   ner-bilstm:
     build:
       context: .
       dockerfile: services/ner-bilstm/Dockerfile
     container_name: medai-ner-bilstm-prod
+    env_file:
+      - .env.prod
+    environment:
+      - MODEL_DIR=/app/models/model
+      - LOG_LEVEL=warning
+    volumes:
+      # Mount shared schemas
+      - ./shared:/app/shared:ro
+    networks:
+      - medai-network
+    restart: unless-stopped
+    # No published ports - internal network only
+
+  # ===========================================================================
+  # NER BiLSTM-CRF Service (BiLSTM-CRF)
+  # ===========================================================================
+  ner-bilstm-crf:
+    build:
+      context: .
+      dockerfile: services/ner-bilstm-crf/Dockerfile
+    container_name: medai-ner-bilstm-crf-prod
+    env_file:
+      - .env.prod
+    environment:
+      - MODEL_DIR=/app/models/model
+      - LOG_LEVEL=warning
+    volumes:
+      # Mount shared schemas
+      - ./shared:/app/shared:ro
+    networks:
+      - medai-network
+    restart: unless-stopped
+    # No published ports - internal network only
+
+  # ===========================================================================
+  # NER CRF Service (sklearn-crfsuite)
+  # ===========================================================================
+  ner-crf:
+    build:
+      context: .
+      dockerfile: services/ner-crf/Dockerfile
+    container_name: medai-ner-crf-prod
     env_file:
       - .env.prod
     environment:

@@ -1,8 +1,7 @@
 # ==============================================================================
-# MedAI LSTM NER Service Dependencies
+# MedAI BiLSTM (no-CRF) NER Service Dependencies
 # ==============================================================================
-# TensorFlow-based dependencies for LSTM NER service.
-# Includes platform-specific TensorFlow builds.
+# Keras v3 model inference service.
 
 # --- Web Framework & API ---
 fastapi>=0.104.0
@@ -12,19 +11,11 @@ uvicorn[standard]>=0.24.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
-# --- TensorFlow & Keras ---
-# Using TensorFlow 2.15.x for compatibility with tensorflow-addons
-# Note: tensorflow-addons requires Python 3.10 (not 3.11)
-tensorflow==2.15.1 ; platform_system == "Linux" and platform_machine == "x86_64"
-tensorflow-aarch64==2.15.0 ; platform_system == "Linux" and platform_machine == "aarch64"
-tensorflow==2.15.1 ; sys_platform == "darwin"
-keras<3.0  # TensorFlow 2.15 uses Keras 2.x
-numpy==1.26.4  # Pinned for TensorFlow compatibility
+# --- Keras v3 + Backend ---
+# The model in services/ner-bilstm/models/model/model.keras was saved with Keras 3.
+keras==3.13.0
+tensorflow>=2.16.0
 
-# --- TensorFlow Addons (for CRF layer) ---
-# Note: Not available for ARM64, only needed for training (not for inference)
-# For inference, CRF layer is already in saved model
-# tensorflow-addons==0.23.0  # Commented out - not needed for inference
+# --- Numerical ---
+numpy>=1.26.0
 
-# NOTE: No PyTorch (Transformer service only)
-# NOTE: No LLM API clients (LLM service only)

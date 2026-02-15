@@ -55,6 +55,7 @@ El backend se implementa como un servicio REST basado en FastAPI, adoptando un e
 - Encapsula la lógica de selección de modelo/variante
 - Ejecuta la extracción y valida/estandariza el resultado antes de retornarlo
 - Permite un paso opcional de normalización terminológica (UMLS), actualmente deshabilitado en la API
+- En modo microservicios, delega la inferencia a servicios remotos vía HTTP (cliente NER)
 
 **C) Capa de Modelos (Estrategias de Extracción)**
 El backend integra tres estrategias:
@@ -71,22 +72,21 @@ El backend integra tres estrategias:
 
 El backend utiliza una arquitectura de microservicios donde cada modelo NER se ejecuta en un contenedor independiente, proporcionando mejor aislamiento, tiempos de inicio más rápidos y capacidades de escalado independiente.
 
-```
-                    ┌─────────────────────┐
-                    │   API Gateway       │
-                    │   Port: 8000        │
-                    │   Size: ~200MB      │
-                    └──────────┬──────────┘
-                               │
-        ┌──────────────────────┼──────────────────────┐
-        │                      │                      │
-        ▼                      ▼                      ▼
-┌───────────────┐      ┌───────────────┐     ┌──────────────┐
-│ Transformer   │      │   BiLSTM     │     │     LLM      │
-│ Port: 8001    │      │  Port: 8002   │     │  Port: 8003  │
-│ Size: ~1.8GB  │      │  Size: ~1.2GB │     │  Size: ~100MB│
-│  RoBERTa      │      │  BiLSTM-CRF   │     │    GPT       │
-└───────────────┘      └───────────────┘     └──────────────┘
+**Servicios y puertos (Docker Compose):**
+- `gateway` (API Gateway): 8000
+- `ner-transformer` (RoBERTa): 8001
+- `ner-bilstm` (BiLSTM-CRF): 8002
+- `ner-llm` (GPT): 8003
+
+#### Diagrama de Arquitectura (Mermaid)
+
+```mermaid
+flowchart LR
+  client["Cliente / Frontend"] --> gateway["API Gateway\n:8000"]
+  gateway -->|"HTTP /predict"| transformer["ner-transformer\n:8001\nRoBERTa"]
+  gateway -->|"HTTP /predict"| bilstm["ner-bilstm\n:8002\nBiLSTM-CRF"]
+  gateway -->|"HTTP /predict"| llm["ner-llm\n:8003\nGPT"]
+  gateway --> mongo[("MongoDB")]
 ```
 
 ### 2.3 Ventajas de la Arquitectura de Microservicios
@@ -142,6 +142,17 @@ El backend utiliza una arquitectura de microservicios donde cada modelo NER se e
 | **Utilidades de texto** | Convertir PDF/DOCX/TXT a texto | Ampliar aplicabilidad a documentos reales |
 | **Configuración** | Parametrizar comportamiento por ambiente | Facilitar despliegue y reproducibilidad |
 | **Persistencia** | Guardar/recuperar resultados + deduplicación | Continuidad operacional y auditoría |
+
+#### Diagrama de Componentes Internos (Mermaid)
+
+```mermaid
+flowchart TD
+  api["Router / FastAPI"] --> service["Service Layer\nExtractionService"]
+  service --> pipeline["Pipeline\n(Orquestación)"]
+  pipeline --> nerclient["NER Client\n(HTTP microservicios)"]
+  service --> repo["Repository\nEpisodeRepository"]
+  repo --> db[("MongoDB")]
+```
 
 ### 2.6 Patrones de Diseño
 
@@ -219,13 +230,28 @@ Esta coexistencia responde a la realidad del desarrollo: cada modelo fue entrena
 
 ### 3.5 Resolución y Reutilización de Modelos
 
-Para evitar recargar pesos de modelos en cada solicitud (lo cual aumenta latencia y consumo), el backend adopta un enfoque de reutilización en memoria:
+Para evitar recargar pesos de modelos en cada solicitud (lo cual aumenta latencia y consumo), el backend adopta un enfoque de reutilización en memoria a nivel de microservicios:
 
-- **Transformers**: Se cachean en memoria para que el costo de carga se pague una sola vez (actualmente fijado a RoBERTa)
-- **Registro central de modelos**: Actúa como fuente de verdad de extractores disponibles, reduciendo dispersión de inicialización
-- **Carga diferida**: El diseño del backend difiere la carga pesada hasta el primer uso efectivo de extracción (mejor experiencia de arranque del servicio)
+- **Transformers**: Se cargan en el servicio `ner-transformer` al arranque y permanecen en memoria (RoBERTa fijo)
+- **BiLSTM**: Se carga en el servicio `ner-bilstm` al arranque y permanece en memoria
+- **LLM**: Inicializa cliente en `ner-llm` al arranque (GPT fijo)
+- **Registro central de modelos**: En gateway solo valida nombres (`lstm`, `transformer`, `llm`); no carga pesos localmente
 
 **Lectura metodológica**: Esta estrategia reduce tiempo de respuesta en operación sostenida y permite comparar variantes sin reconfigurar el servicio completo.
+
+### 3.6 Diagrama de Selección de Modelo (Mermaid)
+
+```mermaid
+flowchart TD
+  A["Solicitud /extract"] --> B["Parámetros (model, model_variant)"]
+  B --> C{"¿model?"}
+  C -- "transformer" --> D["ner-transformer (RoBERTa)"]
+  C -- "lstm" --> E["ner-bilstm (BiLSTM-CRF)"]
+  C -- "llm" --> F["ner-llm (GPT)"]
+  D --> G["Entidades + meta"]
+  E --> G
+  F --> G
+```
 
 ---
 
@@ -235,7 +261,7 @@ Para evitar recargar pesos de modelos en cada solicitud (lo cual aumenta latenci
 
 1. **Interfaz orientada a flujos reales**: La API acepta entradas en texto o documento, ya que en práctica clínica y en flujos institucionales las notas pueden existir como PDF/DOCX
 
-2. **Metadatos clínicos mínimos para trazabilidad**: Se solicita `episode_id` y `note_date` para organizar resultados por episodio/nota, y facilitar auditoría y recuperación
+2. **Metadatos clínicos mínimos para trazabilidad**: Se exige `episode_id` y `note_date` para organizar resultados por episodio/nota, y facilitar auditoría y recuperación
 
 3. **Respuesta tipo "acuse" con expansión opcional**: Para evitar respuestas excesivamente grandes (texto completo + entidades), la API retorna un acuse con `id` y permite `expand=true` cuando se requiere el resultado completo en la misma respuesta
 
@@ -264,6 +290,22 @@ Para evitar recargar pesos de modelos en cada solicitud (lo cual aumenta latenci
   - `save`: Guardar o no guardar resultado (default: `true`)
   - `expand`: Incluir o no el resultado completo en la misma respuesta (default: `false`)
   - `normalize`: Activar normalización UMLS (parámetro aceptado pero actualmente ignorado)
+  - `systems_csv`: Lista separada por comas de sistemas objetivo (solo relevante si normalización estuviera activa)
+  - `restrict_types_csv`: Lista separada por comas de tipos de entidad a normalizar (solo relevante si normalización estuviera activa)
+
+#### Parámetros para POST /extract-batch
+
+- `files[]`: Lista de archivos (PDF/DOCX/TXT)
+- `notes_meta`: JSON array con metadatos por archivo (requerido). Debe incluir `filename`, `episode_id`, `note_date` por cada archivo
+- `model`, `model_variant`, `save`, `normalize`, `systems_csv`, `restrict_types_csv`: Igual que en `/extract`
+
+**Ejemplo de `notes_meta`:**
+```json
+[
+  {"filename": "nota_001.pdf", "episode_id": "EP-001", "note_date": "2024-01-15"},
+  {"filename": "nota_002.pdf", "episode_id": "EP-002", "note_date": "2024-01-16"}
+]
+```
 
 ### 4.4 Formato de Response
 
@@ -275,6 +317,8 @@ Para evitar recargar pesos de modelos en cada solicitud (lo cual aumenta latenci
   "entity_count": 5
 }
 ```
+
+**Campos opcionales del acuse**: `url`, `filename`, `episode_id`, `note_date`, `result` (si `expand=true`).
 
 **Salida expandida (expand=true):**
 ```json
@@ -309,6 +353,26 @@ Para evitar recargar pesos de modelos en cada solicitud (lo cual aumenta latenci
 }
 ```
 
+**Salida de lote (extract-batch):**
+```json
+{
+  "items": [
+    {
+      "filename": "nota_001.pdf",
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "stored": true,
+      "entity_count": 8,
+      "url": "/notes/550e8400-e29b-41d4-a716-446655440000"
+    },
+    {
+      "filename": "nota_002.pdf",
+      "stored": false,
+      "error": "Missing episode_id for 'nota_002.pdf'"
+    }
+  ]
+}
+```
+
 ### 4.5 Estructura de Entidades
 
 Las entidades incluyen offsets (start/end), lo que permite trazabilidad y visualización (resaltar entidades en el texto) sin ambigüedad.
@@ -334,17 +398,90 @@ API (/extract o /extract-batch)
   ▼
 Pipeline
   │ 3) Resolución de extractor (modelo + variante)
-  │ 4) Inferencia NER → lista de entidades
-  │ 5) Validación/estandarización de salida
-  │ 6) (Opcional, actualmente deshabilitado) Normalización terminológica (UMLS)
+  │ 4) Llamada HTTP a microservicio NER correspondiente
+  │ 5) Inferencia NER → lista de entidades (en microservicio)
+  │ 6) Validación/estandarización de salida (gateway)
+  │ 7) (Opcional, actualmente deshabilitado) Normalización terminológica (UMLS)
   ▼
 Persistencia (opcional)
-  │ 7) Guardado por episodio + deduplicación por hash
+  │ 8) Guardado por episodio + deduplicación por hash
   ▼
 Respuesta
-  │ 8) Acuse (id, stored, entity_count) + expand opcional
+  │ 9) Acuse (id, stored, entity_count) + expand opcional
   ▼
 Cliente
+```
+
+#### Diagrama de Flujo Backend (Mermaid)
+
+```mermaid
+flowchart TD
+  A["Cliente"] --> B["API Gateway /extract"]
+  B --> C{"¿Archivo?"}
+  C -- "sí" --> D["Documento → texto"]
+  C -- "no" --> E["Texto directo"]
+  D --> F["NER Client"]
+  E --> F
+  F --> G{"model"}
+  G -- "transformer" --> H["ner-transformer\nRoBERTa"]
+  G -- "lstm" --> I["ner-bilstm\nBiLSTM-CRF"]
+  G -- "llm" --> J["ner-llm\nGPT"]
+  H --> K["Entidades + meta"]
+  I --> K
+  J --> K
+  K --> L["Validación + normalización regex"]
+  L --> M{"save"}
+  M -- "sí" --> N[("MongoDB")]
+  M -- "no" --> O["Respuesta"]
+  N --> O
+  O --> P["Cliente"]
+```
+
+#### Diagrama de Secuencia /extract (Mermaid)
+
+```mermaid
+sequenceDiagram
+  participant Client as "Cliente"
+  participant API as "Gateway /extract"
+  participant Parser as "Parser de documentos"
+  participant NER as "Servicio NER"
+  participant DB as "MongoDB"
+
+  Client->>API: POST /extract (text|file, model)
+  alt Archivo
+    API->>Parser: Convertir PDF/DOCX/TXT → texto
+    Parser-->>API: texto limpio
+  else Texto directo
+    API-->>API: texto ya disponible
+  end
+  API->>NER: POST /predict
+  NER-->>API: entities + meta
+  API->>API: Validación + normalización regex
+  API->>DB: Guardar nota (si save=true)
+  DB-->>API: note_id / stored
+  API-->>Client: Acuse + expand opcional
+```
+
+#### Diagrama de Secuencia /extract-batch (Mermaid)
+
+```mermaid
+sequenceDiagram
+  participant Client as "Cliente"
+  participant API as "Gateway /extract-batch"
+  participant Parser as "Parser de documentos"
+  participant NER as "Servicio NER"
+  participant DB as "MongoDB"
+
+  Client->>API: POST /extract-batch (files[], model)
+  loop Por archivo
+    API->>Parser: Convertir documento → texto
+    Parser-->>API: texto limpio
+    API->>NER: POST /predict
+    NER-->>API: entities + meta
+    API->>DB: Guardar nota (si save=true)
+    DB-->>API: note_id / stored
+  end
+  API-->>Client: Lista de acuses
 ```
 
 ---
@@ -397,6 +534,43 @@ Cliente
 
 **Nota**: En `entities`, el campo `code` representa el valor normalizado derivado del texto (no códigos terminológicos en la salida actual).
 
+#### Diagrama ER de la Colección `episodes` (Mermaid)
+
+```mermaid
+erDiagram
+  EPISODE ||--o{ NOTE : contains
+  NOTE ||--o{ ENTITY : has
+  NOTE ||--|| META : has
+
+  EPISODE {
+    string _id
+    date created_at
+    date updated_at
+  }
+  NOTE {
+    string note_id
+    string filename
+    string source_system
+    string note_date
+    date created_at
+    string model
+    string content_hash
+    string text
+  }
+  ENTITY {
+    string type
+    string text
+    int start
+    int end
+    string code
+  }
+  META {
+    string model
+    float inference_time_ms
+    int entity_count
+  }
+```
+
 ### 5.3 Metadatos Almacenados
 
 #### Nivel de Episodio (documento raíz)
@@ -423,6 +597,17 @@ Cliente
 #### Deduplicación (por contenido)
 - Se calcula `content_hash = SHA-256(texto)`
 - Si ya existe una nota con el mismo `content_hash` dentro del mismo episodio, el backend NO inserta una nueva nota; retorna el `note_id` existente
+
+#### Diagrama de Deduplicación (Mermaid)
+
+```mermaid
+flowchart TD
+  A["Texto"] --> B["SHA-256 (content_hash)"]
+  B --> C{"¿Existe hash en el episodio?"}
+  C -- "sí" --> D["Reusar note_id existente"]
+  C -- "no" --> E["Insertar nueva nota"]
+  E --> F["Actualizar updated_at del episodio"]
+```
 
 #### Índices Creados
 - `updated_at`: Ordenamiento/consulta por última actualización del episodio
@@ -468,6 +653,20 @@ El backend aplica limpieza moderada, especialmente para PDFs:
 - **DOCX**: docx2txt para conversión directa a texto plano
 - **TXT**: Procesamiento nativo con manejo de encodings (UTF-8, latin-1, etc.)
 
+#### Diagrama de Conversión de Documentos (Mermaid)
+
+```mermaid
+flowchart TD
+  A["Archivo (PDF/DOCX/TXT)"] --> B{"¿Tipo?"}
+  B -- "PDF" --> C["PyMuPDF → texto"]
+  B -- "DOCX" --> D["docx2txt → texto"]
+  B -- "TXT" --> E["Lectura directa"]
+  C --> F["Limpieza básica (saltos, guiones, espacios)"]
+  D --> F
+  E --> F
+  F --> G["Pipeline de extracción"]
+```
+
 ---
 
 ## 7. Despliegue y Configuración
@@ -498,6 +697,21 @@ Se disponen variantes para:
 - **Desarrollo** (`docker-compose.dev.yml`): con recarga automática
 - **Producción local** (`docker-compose.prod.yml`): sin recarga, optimizado para estabilidad
 
+#### Diagrama de Despliegue Local (Mermaid)
+
+```mermaid
+flowchart LR
+  client["Cliente"] --> gateway["gateway:8000"]
+  subgraph host["Host local"]
+    subgraph docker["Docker Compose"]
+      gateway --> transformer["ner-transformer:8001"]
+      gateway --> bilstm["ner-bilstm:8002"]
+      gateway --> llm["ner-llm:8003"]
+      gateway --> mongo[("mongo:27017")]
+    end
+  end
+```
+
 ### 7.3 Configuración por Ambiente
 
 El backend separa configuración del código para favorecer reproducibilidad:
@@ -514,8 +728,7 @@ El backend separa configuración del código para favorecer reproducibilidad:
 | **CORS** | `CORS_ORIGINS` | Habilitar frontend confiable |
 | **Persistencia** | `MONGODB_URI`, `MONGODB_DB` | Conexión a almacenamiento |
 | **Modelos** | IDs de modelos Transformer, rutas locales BiLSTM | Selección de pesos/versiones |
-| **LLM** | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | Habilitar proveedor LLM (si se usa) |
-| **UMLS** | `UMLS_APIKEY` | Habilitar normalización terminológica |
+| **LLM** | `OPENAI_API_KEY` | Habilitar proveedor LLM (configurado en ner-llm) |
 
 ### 7.4 Dominio y Túnel Seguro con Cloudflare
 
@@ -572,17 +785,7 @@ Si se habilita la normalización (`normalize=true`), el flujo sería:
 
 ### 8.3 Estado Operativo en el Servicio
 
-Actualmente, la normalización se contempla como un paso opcional del pipeline; sin embargo:
-
-- Se encuentra **temporalmente deshabilitada** en el flujo de la API (decisión orientada a reducir cargas y dependencias adicionales en ejecución)
-- El código está implementado y funcional
-- El parámetro `normalize=true` es aceptado pero actualmente **no activa** el flujo en la API
-
-### 8.4 Requisitos
-
-- Clave API de UMLS (`UMLS_APIKEY`)
-- Registro en https://uts.nlm.nih.gov/
-- Especificar sistemas de terminología mediante `systems_csv` (ej: "SNOMEDCT_US,ICD10CM")
+La normalización terminológica fue removida del gateway. El parámetro `normalize` se acepta en la API pero no tiene efecto en el flujo actual. La normalización de valores (regex) sigue activa para extraer valores numéricos de las entidades.
 
 ---
 
@@ -746,11 +949,15 @@ curl http://localhost:8003/readyz  # LLM
 
 #### Pruebas
 ```bash
-# Prueba rápida (2-3 minutos)
-./quick_test.sh
+# Prueba manual básica (gateway)
+curl http://localhost:8000/health
 
-# Suite completa (5-10 minutos)
-./test_microservices.sh
+# Prueba manual mínima (extracción desde texto)
+curl -X POST http://localhost:8000/extract \
+  -F "text=Paciente con FiO2 60%, PEEP 8 cmH2O" \
+  -F "model=transformer" \
+  -F "episode_id=EP-001" \
+  -F "note_date=2024-01-15T10:30:00"
 ```
 
 ### Apéndice B: Estructura de Directorios del Proyecto
@@ -770,11 +977,9 @@ medai-backend/
 │   └── services/
 │       ├── extraction_service.py  # Service Layer para extracción
 │       ├── ner_client.py          # Cliente para microservicios NER
-│       ├── normalizer.py          # Normalización UMLS
 │       ├── pipeline.py            # Orquestación de extracción
 │       ├── registry.py            # Registro de modelos
 │       ├── text_utils.py          # Utilidades de texto
-│       ├── translator.py          # Traducción ES-EN
 │       └── utils.py               # Utilidades compartidas
 ├── services/                      # Microservicios NER
 │   ├── ner-transformer/
@@ -791,18 +996,16 @@ medai-backend/
 │       ├── requirements.txt
 │       └── main.py
 ├── shared/                        # Código compartido
-│   ├── schemas.py                 # Modelos Pydantic compartidos
-│   └── utils.py                   # Utilidades compartidas
+│   └── schemas.py                 # Modelos Pydantic compartidos
 ├── scripts/
-│   └── export_openapi.py          # Exportar esquema OpenAPI
+│   ├── export_openapi.py          # Exportar esquema OpenAPI
+│   └── export_openapi_docs.sh     # Helper local para exportar OpenAPI (ignorado en git)
 ├── docker-compose.dev.yml         # Configuración desarrollo
 ├── docker-compose.prod.yml        # Configuración producción
 ├── Dockerfile.gateway             # Imagen del gateway
-├── requirements.txt               # Dependencias del gateway
+├── requirements-gateway.txt        # Dependencias del gateway
 ├── .env.dev                       # Variables de entorno desarrollo
 ├── .env.prod                      # Variables de entorno producción
-├── quick_test.sh                  # Script de prueba rápida
-├── test_microservices.sh          # Suite de pruebas completa
 └── README.md                      # Documentación principal
 ```
 

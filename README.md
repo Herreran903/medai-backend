@@ -49,8 +49,10 @@ The backend uses a microservices architecture where each NER model runs in an in
 |---------|------|-------------|------------|--------------|
 | **Gateway** | 8000 | API REST, routing, MongoDB | ~200MB | <2s |
 | **Transformer** | 8001 | RoBERTa NER (fixed) | ~1.8GB | 5-30s |
-| **BiLSTM** | 8002 | BiLSTM-CRF NER | ~1.2GB | 5-10s |
+| **BiLSTM** | 8002 | BiLSTM NER (no CRF) | ~1.0GB | 5-10s |
+| **BiLSTM-CRF** | 8005 | BiLSTM-CRF NER | ~1.2GB | 5-10s |
 | **LLM** | 8003 | GPT NER (fixed) | ~100MB | <1s |
+| **CRF** | 8004 | sklearn-crfsuite CRF NER | ~400MB | <2s |
 | **MongoDB** | 27017 | Database | - | <5s |
 
 ### Microservices Benefits
@@ -245,7 +247,9 @@ Configuration is managed through environment variables. Create a `.env` file bas
 |----------|-------------|---------|
 | `NER_TRANSFORMER_URL` | Transformer service URL | http://ner-transformer:8001 |
 | `NER_LSTM_URL` | BiLSTM service URL | http://ner-bilstm:8002 |
+| `NER_LSTM_CRF_URL` | BiLSTM-CRF service URL | http://ner-bilstm-crf:8005 |
 | `NER_LLM_URL` | LLM service URL | http://ner-llm:8003 |
+| `NER_CRF_URL` | CRF service URL | http://ner-crf:8004 |
 
 ### API Keys (optional)
 
@@ -256,11 +260,33 @@ Configuration is managed through environment variables. Create a `.env` file bas
 ## Model Selection
 
 ### BiLSTM (model=`lstm`)
-Fast inference with moderate accuracy. Best for high-throughput scenarios.
+Fast inference with moderate accuracy (no CRF layer). Best for high-throughput scenarios.
 
 ```bash
 curl -X POST "http://localhost:8000/extract" \
   -F "model=lstm" \
+  -F "text=Paciente con FiO2 60%" \
+  -F "episode_id=EP-001" \
+  -F "note_date=2024-01-15T10:00:00"
+```
+
+### BiLSTM-CRF (model=`lstm_crf`)
+BiLSTM with CRF decoding (Viterbi). Useful to compare against BiLSTM-only.
+
+```bash
+curl -X POST "http://localhost:8000/extract" \
+  -F "model=lstm_crf" \
+  -F "text=Paciente con FiO2 60%" \
+  -F "episode_id=EP-001" \
+  -F "note_date=2024-01-15T10:00:00"
+```
+
+### CRF (model=`crf`)
+Lightweight classic CRF (sklearn-crfsuite). Useful as a fast baseline model.
+
+```bash
+curl -X POST "http://localhost:8000/extract" \
+  -F "model=crf" \
   -F "text=Paciente con FiO2 60%" \
   -F "episode_id=EP-001" \
   -F "note_date=2024-01-15T10:00:00"
@@ -364,6 +390,8 @@ docker-compose -f docker-compose.dev.yml logs -f
 docker-compose -f docker-compose.dev.yml logs -f gateway
 docker-compose -f docker-compose.dev.yml logs -f ner-transformer
 docker-compose -f docker-compose.dev.yml logs -f ner-bilstm
+docker-compose -f docker-compose.dev.yml logs -f ner-bilstm-crf
+docker-compose -f docker-compose.dev.yml logs -f ner-crf
 docker-compose -f docker-compose.dev.yml logs -f ner-llm
 ```
 
@@ -376,11 +404,15 @@ curl http://localhost:8000/health
 # NER services
 curl http://localhost:8001/health   # Transformer (liveness)
 curl http://localhost:8002/health   # BiLSTM (liveness)
+curl http://localhost:8004/health   # CRF (liveness)
+curl http://localhost:8005/health   # BiLSTM-CRF (liveness)
 curl http://localhost:8003/health   # LLM (liveness)
 
 # NER services (readiness - checks if model is loaded)
 curl http://localhost:8001/readyz  # Transformer
 curl http://localhost:8002/readyz  # BiLSTM
+curl http://localhost:8004/readyz  # CRF
+curl http://localhost:8005/readyz  # BiLSTM-CRF
 curl http://localhost:8003/readyz  # LLM
 ```
 

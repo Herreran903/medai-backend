@@ -1,13 +1,17 @@
 """
-BiLSTM-CRF Named Entity Recognition Model for Clinical Text.
+BiLSTM Named Entity Recognition Model for Clinical Text.
 
 This module implements a BiLSTM-based Named Entity Recognition (NER) extractor
 for clinical text, specifically trained on mechanical ventilation notes in Spanish.
 
+This service targets the **BiLSTM-only** variant (no CRF layer). The provided
+model is saved in the Keras v3 ``.keras`` format and must be loaded with the
+standalone ``keras`` package (not legacy ``tf.keras`` from TensorFlow 2.15).
+
 Architecture Context:
     The BiLSTM extractor is one of three NER models available in MedAI:
 
-    - **BiLSTM** (this module): BiLSTM-CRF with BIO tagging, trained on domain data
+    - **BiLSTM** (this module): BiLSTM with BIO tagging, trained on domain data
     - **Transformer**: Fine-tuned RoBERTa (fixed for experiments)
     - **LLM**: GPT-based extraction (fixed for experiments)
 
@@ -19,7 +23,7 @@ Model Architecture:
 
     - Word embedding layer (vocabulary from training corpus)
     - Bidirectional LSTM layers for sequence encoding
-    - CRF layer for Viterbi-decoded BIO tag sequences
+    - Softmax classification head for BIO tag probabilities
     - Post-processing for BIO to entity span conversion
 
 BIO Tagging Scheme:
@@ -37,7 +41,7 @@ BIO Tagging Scheme:
 Model Files:
     The model requires the following files in the model directory:
 
-    - ``model.keras`` or ``saved_model/``: TensorFlow model weights
+    - ``model.keras``: Keras v3 model weights (required)
     - ``word2idx.json``: Vocabulary mapping (word -> integer ID)
     - ``tag2idx.json``: Tag mapping (BIO tag -> integer ID)
     - ``config.json``: Model configuration (max_len, pad_id)
@@ -70,27 +74,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
+import keras
 import numpy as np
-import tensorflow as tf
-
-try:
-    from tensorflow_addons.text import CRF
-    TFA_AVAILABLE = True
-except ImportError:
-    TFA_AVAILABLE = False
-    CRF = None
-
-try:
-    from mwrapper import ModelWithCRFLoss, ModelWithCRFLossDSCLoss
-    MWRAPPER_AVAILABLE = True
-except ImportError:
-    MWRAPPER_AVAILABLE = False
-    ModelWithCRFLoss = None
-    ModelWithCRFLossDSCLoss = None
 
 from shared.schemas import Entity
 
@@ -222,38 +210,13 @@ class LSTMExtractor:
             self.word2idx.get("<UNK>", self.word2idx.get("[UNK]", 1))
         )
 
-        # Prepare custom_objects for CRF model loading
-        custom_objects = {}
-        if TFA_AVAILABLE and CRF is not None:
-            custom_objects['CRF'] = CRF
-        if MWRAPPER_AVAILABLE:
-            if ModelWithCRFLoss is not None:
-                custom_objects['ModelWithCRFLoss'] = ModelWithCRFLoss
-            if ModelWithCRFLossDSCLoss is not None:
-                custom_objects['ModelWithCRFLossDSCLoss'] = ModelWithCRFLossDSCLoss
-
-        # Load model (Keras native or SavedModel format)
-        # Note: Use tf.keras.models.load_model for both formats to support custom_objects (CRF)
+        # Load model (Keras v3 format)
         keras_path = self.model_dir / "model.keras"
-        sm_path = self.model_dir / "saved_model"
+        if not keras_path.exists():
+            raise FileNotFoundError(f"No Keras v3 model found at {keras_path}")
 
-        if keras_path.exists():
-            model_path = keras_path.as_posix()
-            logger.info("Loading Keras model from %s (CRF support: %s)",
-                       keras_path, TFA_AVAILABLE)
-        elif sm_path.exists():
-            model_path = sm_path.as_posix()
-            logger.info("Loading SavedModel from %s (CRF support: %s)",
-                       sm_path, TFA_AVAILABLE)
-        else:
-            raise FileNotFoundError(f"No model found at {keras_path} or {sm_path}")
-
-        self.model = tf.keras.models.load_model(
-            model_path,
-            compile=False,
-            custom_objects=custom_objects if custom_objects else None
-        )
-        self._is_keras = True
+        logger.info("Loading Keras v3 model from %s", keras_path)
+        self.model = keras.saving.load_model(keras_path.as_posix(), compile=False)
 
     def _tokenize(self, text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
         """
@@ -320,14 +283,9 @@ class LSTMExtractor:
             - output: Either probabilities (max_len, num_tags) or decoded IDs (max_len,)
             - is_crf: Boolean indicating if model has CRF layer
         """
-        if isinstance(self.model, tf.keras.Model):
-            output = self.model.predict(X, verbose=0)[0]
-        else:
-            fn = self.model.signatures.get("serve")
-            out = fn(tf.convert_to_tensor(X))
-            output = out["outputs"].numpy()[0]
+        output = self.model.predict(X, verbose=0)[0]
 
-        # Detect CRF model: output shape is (max_len,) instead of (max_len, num_tags)
+        # Detect CRF-like decoded output: shape (max_len,) instead of (max_len, num_tags)
         is_crf = len(output.shape) == 1
         return output, is_crf
 

@@ -28,7 +28,7 @@ Pipeline Flow:
                  │
                  ▼
         ┌─────────────────┐
-        │   Extraction    │ ← BiLSTM / Transformer / LLM
+        │   Extraction    │ ← BiLSTM / CRF / Transformer / LLM
         └────────┬────────┘
                  │
                  ▼
@@ -103,7 +103,9 @@ async def extract_from_text(
         model: Extraction model identifier. Must be a key in
             :data:`app.services.registry.MODEL_REGISTRY`:
 
-            - ``lstm``: BiLSTM-CRF model
+            - ``lstm``: BiLSTM model (no CRF layer)
+            - ``lstm_crf``: BiLSTM-CRF model (Viterbi decoding)
+            - ``crf``: CRF model (sklearn-crfsuite)
             - ``transformer``: Fine-tuned RoBERTa (fixed)
             - ``llm``: LLM-based extraction (GPT fixed)
 
@@ -111,7 +113,7 @@ async def extract_from_text(
 
             - For ``transformer``: "roberta" (fixed for experiments)
             - For ``llm``: "gpt" (fixed for experiments)
-            - Ignored for ``lstm``
+            - Ignored for ``lstm``, ``lstm_crf``, and ``crf``
 
         normalize: Whether to request terminology normalization from the NER service.
             Note: the gateway service layer currently forces this to False.

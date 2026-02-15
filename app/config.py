@@ -152,9 +152,19 @@ class Settings(BaseSettings):
         description="BiLSTM NER service URL.",
     )
 
+    ner_lstm_crf_url: str = Field(
+        default="http://ner-bilstm-crf:8005",
+        description="BiLSTM-CRF NER service URL.",
+    )
+
     ner_llm_url: str = Field(
         default="http://ner-llm:8003",
         description="LLM NER service URL.",
+    )
+
+    ner_crf_url: str = Field(
+        default="http://ner-crf:8004",
+        description="CRF NER service URL.",
     )
 
     ner_request_timeout: float = Field(

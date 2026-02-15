@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # Model configuration
     model_dir: Path = Field(
         default=Path("/app/models/model"),
-        description="Directory containing BiLSTM-CRF model files (model.keras or saved_model/, word2idx.json, tag2idx.json, config.json)",
+        description="Directory containing BiLSTM model files (model.keras, word2idx.json, tag2idx.json, config.json)",
     )
 
 

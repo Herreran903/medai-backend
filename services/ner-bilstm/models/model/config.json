@@ -3,6 +3,7 @@
   "pad_id": 0,
   "n_tags": 57,
   "formats": {
-    "saved_model": "saved_model"
+    "keras": "model.keras",
+    "saved_model_dir": "saved_model"
   }
 }
