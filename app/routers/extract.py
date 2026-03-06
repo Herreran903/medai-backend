@@ -114,10 +114,6 @@ and laboratory values. Results are persisted to MongoDB for later retrieval.
 - `crf`: Lightweight CRF (sklearn-crfsuite)
 - `transformer`: Best accuracy (RoBERTa-only)
 - `llm`: Highest flexibility (GPT-only)
-
-**Normalization:**
-Normalization is currently disabled in the gateway; the `normalize` flag is
-accepted but ignored.
 """,
     response_description="Acknowledgment with note ID and optional full result",
 )
@@ -146,22 +142,6 @@ async def extract(
         ...,
         description="ISO 8601 date of the clinical note (e.g., `2024-01-15T10:30:00`). Required (API returns 400 if missing).",
     ),
-    save: Optional[bool] = Form(
-        True,
-        description="Whether to persist extraction results to MongoDB.",
-    ),
-    normalize: Optional[bool] = Form(
-        False,
-        description="Whether to normalize DX entities (currently ignored by gateway).",
-    ),
-    systems_csv: Optional[str] = Form(
-        None,
-        description="Comma-separated target coding systems for normalization (e.g., `SNOMEDCT_US,ICD10CM`).",
-    ),
-    restrict_types_csv: Optional[str] = Form(
-        None,
-        description="Comma-separated entity types to include in normalization (e.g., `DX`).",
-    ),
     expand: Optional[bool] = Form(
         False,
         description="Whether to include full extraction result in response.",
@@ -182,10 +162,6 @@ async def extract(
         model_variant: Model variant for transformer/llm.
         episode_id: Clinical episode identifier (required).
         note_date: Note date in ISO 8601 format (required).
-        save: Whether to persist results.
-        normalize: Whether to apply UMLS normalization (currently ignored by gateway).
-        systems_csv: Target coding systems for normalization.
-        restrict_types_csv: Entity types to normalize.
         expand: Include full result in response.
         service: ExtractionService instance (injected).
 
@@ -202,10 +178,6 @@ async def extract(
         model_variant=model_variant,
         episode_id=episode_id or "",
         note_date=note_date or "",
-        save=save if save is not None else True,
-        normalize=normalize or False,
-        systems_csv=systems_csv,
-        restrict_types_csv=restrict_types_csv,
         expand=expand or False,
     )
 
@@ -256,22 +228,6 @@ async def extract_batch(
         None,
         description="Model variant: `roberta` for transformer (fixed), `gpt` for llm (fixed).",
     ),
-    save: Optional[bool] = Form(
-        True,
-        description="Whether to persist extraction results to MongoDB.",
-    ),
-    normalize: Optional[bool] = Form(
-        False,
-        description="Whether to normalize DX entities (currently ignored by gateway).",
-    ),
-    systems_csv: Optional[str] = Form(
-        None,
-        description="Comma-separated target coding systems for normalization.",
-    ),
-    restrict_types_csv: Optional[str] = Form(
-        None,
-        description="Comma-separated entity types to include in normalization.",
-    ),
     notes_meta: Optional[str] = Form(
         None,
         description="JSON array with per-file metadata (filename, episode_id, note_date). Required; files without metadata will fail.",
@@ -288,10 +244,6 @@ async def extract_batch(
         files: List of uploaded files.
         model: Extraction model identifier.
         model_variant: Model variant for transformer/llm.
-        save: Whether to persist results.
-        normalize: Whether to apply UMLS normalization (currently ignored by gateway).
-        systems_csv: Target coding systems.
-        restrict_types_csv: Entity types to normalize.
         notes_meta: JSON array with per-file metadata (required).
         service: ExtractionService instance (injected).
 
@@ -305,10 +257,6 @@ async def extract_batch(
         files=files,
         model=model,
         model_variant=model_variant,
-        save=save if save is not None else True,
-        normalize=normalize or False,
-        systems_csv=systems_csv,
-        restrict_types_csv=restrict_types_csv,
         notes_meta_json=notes_meta,
     )
 
@@ -333,7 +281,7 @@ integration with downstream systems, or audit purposes.
 Returns the complete extraction result including:
 - Original text content
 - All extracted entities with types and spans
-- Extraction metadata (model, normalization status)
+- Extraction metadata (model, provider, inference time, entity count)
 """,
     response_description="Complete extraction result with text, entities, and metadata",
     responses={

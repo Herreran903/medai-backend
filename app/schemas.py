@@ -93,7 +93,7 @@ class Entity(BaseModel):
             - ``PAFI``: PaO2/FiO2 ratio
 
         **Clinical:**
-            - ``DX``: Diagnosis (normalizable to SNOMED-CT/ICD-10)
+            - ``DX``: Diagnosis
 
     Attributes:
         type: Entity type classification from the NER model.

@@ -3,7 +3,7 @@ Clinical Entity Extraction Pipeline Service.
 
 This module provides the high-level orchestration layer for clinical Named Entity
 Recognition (NER), coordinating model selection, extraction, validation, and
-optional normalization.
+value-code enrichment.
 
 Architecture Context:
     The pipeline service is the central coordination point for all extraction
@@ -12,37 +12,12 @@ Architecture Context:
     - Model selection and initialization
     - Transformer variant resolution (RoBERTa fixed)
     - Entity validation and standardization
-    - Optional terminology normalization (handled downstream; disabled in gateway path)
+    - Regex-based value normalization for the ``code`` field
 
     All API endpoints delegate to this service via :func:`extract_from_text`.
 
 Pipeline Flow:
-    .. code-block:: text
-
-        Input Text
-            │
-            ▼
-        ┌─────────────────┐
-        │ Model Selection │ ← MODEL_REGISTRY (validation only)
-        └────────┬────────┘
-                 │
-                 ▼
-        ┌─────────────────┐
-        │   Extraction    │ ← BiLSTM / CRF / Transformer / LLM
-        └────────┬────────┘
-                 │
-                 ▼
-        ┌─────────────────┐
-        │   Validation    │ ← Span bounds, type checking
-        └────────┬────────┘
-                 │
-                 ▼
-        ┌─────────────────┐
-        │ Normalization   │ ← Regex value normalization; terminology optional (downstream)
-        └────────┬────────┘
-                 │
-                 ▼
-        ExtractResponse
+    Input Text -> Model Selection -> Extraction -> Validation -> Value Coding -> ExtractResponse
 
 Microservices Routing:
     The gateway does not load model weights locally. It validates model names
@@ -54,8 +29,7 @@ Usage:
     >>> result = extract_from_text(
     ...     "Paciente con FiO2 60%, PEEP 8 cmH2O",
     ...     model="transformer",
-    ...     model_variant="roberta",
-    ...     normalize=False
+    ...     model_variant="roberta"
     ... )
     >>> print(result.entities[0].type)
     'FIO2'
@@ -68,7 +42,7 @@ See Also:
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Optional
 
 from app.config import get_settings
 from app.schemas import Entity, ExtractResponse
@@ -84,15 +58,12 @@ async def extract_from_text(
     model: str,
     *,
     model_variant: Optional[str] = None,
-    normalize: bool = False,
-    systems: Optional[List[str]] = None,
-    restrict_types: Optional[List[str]] = None,
 ) -> ExtractResponse:
     """
     Extract clinical entities from text using the specified model.
 
     This is the primary entry point for all extraction operations in MedAI.
-    It coordinates model selection, extraction, validation, and optional
+    It coordinates model selection, extraction, validation, and value-code
     normalization into a single unified interface.
 
     Args:
@@ -113,13 +84,6 @@ async def extract_from_text(
             - For ``llm``: "gpt" (fixed)
             - Ignored for ``lstm``, ``lstm_crf``, and ``crf``
 
-        normalize: Whether to request terminology normalization from the NER service.
-            Note: the gateway service layer currently forces this to False.
-        systems: Target terminology systems for normalization
-            (e.g., ["SNOMEDCT_US", "ICD10CM"]).
-        restrict_types: Entity types to include in normalization
-            (e.g., ["DX"]). None means all supported types.
-
     Returns:
         ExtractResponse: Extraction result containing:
 
@@ -136,7 +100,7 @@ async def extract_from_text(
         2. **Model Resolution**: Validate model against registry
         3. **Extraction**: Route request to NER microservice via HTTP
         4. **Entity Validation**: Validate spans and construct Entity objects
-        5. **Normalization**: Regex value normalization; optional terminology normalization downstream
+        5. **Value Coding**: Regex value normalization for missing ``code`` fields
         6. **Response Construction**: Build ExtractResponse with metadata
 
     Example:
@@ -147,15 +111,6 @@ async def extract_from_text(
         ... )
         >>> len(result.entities)
         2
-
-        >>> # Extraction with normalization
-        >>> result = extract_from_text(
-        ...     "Diagnóstico: neumonía",
-        ...     model="transformer",
-        ...     normalize=True,
-        ...     systems=["SNOMEDCT_US"]
-        ... )
-
     Note:
         Model lifecycle is handled by the NER microservices. The gateway only
         validates model identifiers and orchestrates HTTP calls.
@@ -180,9 +135,6 @@ async def extract_from_text(
                 model=model,
                 text=text,
                 model_variant=model_variant,
-                normalize=normalize,
-                systems=systems,
-                restrict_types=restrict_types,
             )
 
         # Parse response from NER service
@@ -198,6 +150,7 @@ async def extract_from_text(
         # Simplify meta to only essential fields for thesis
         simplified_meta = {
             "model": meta.get("model"),
+            "provider": meta.get("provider"),
             "inference_time_ms": meta.get("inference_time_ms"),
             "entity_count": len(entities),
         }
@@ -207,3 +160,4 @@ async def extract_from_text(
     except NERServiceError as exc:
         logger.exception("NER service call failed for model '%s'", model)
         raise RuntimeError(f"NER service unavailable: {exc}") from exc
+

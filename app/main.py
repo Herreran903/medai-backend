@@ -8,9 +8,8 @@ Architecture Context:
     MedAI Backend is a RESTful API service that provides:
 
     - Clinical Named Entity Recognition (NER) from medical notes
-    - Multiple extraction models (LSTM, Transformer, LLM)
-    - Entity normalization to standard medical terminologies (SNOMED-CT, ICD-10),
-      currently disabled in the gateway flow
+    - Multiple extraction models (LSTM, LSTM-CRF, CRF, Transformer, LLM)
+    - Value-code normalization from extracted entity text
     - Persistent storage of extraction results in MongoDB
 
     The application follows the Factory pattern for testability and supports

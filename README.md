@@ -15,7 +15,7 @@ MedAI Backend is a production-grade REST API service that provides clinical Name
 
 - **Multiple NER Models**: Choose from CRF, BiLSTM, BiLSTM-CRF, Transformer (RoBERTa), or LLM-based (GPT) extraction
 - **Microservices Architecture**: Independent services for each model with isolated dependencies
-- **Entity Normalization**: UMLS-based normalization to SNOMED-CT/ICD-10 (module available; currently disabled in gateway)
+- **Value Normalization**: Regex-based normalization of extracted values into `code` (e.g., `FiO2 60%` -> `60`)
 - **Batch Processing**: Process multiple clinical notes in a single request
 - **Document Support**: Accept PDF, DOCX, and plain text files
 - **Persistent Storage**: MongoDB-based storage with content deduplication
@@ -122,11 +122,8 @@ curl -X POST "http://localhost:8000/extract" \
   - For `llm`: `gpt` (fixed)
 - `episode_id`: Episode identifier (required; API returns 400 if missing)
 - `note_date`: Clinical note date (ISO 8601, required; API returns 400 if missing)
-- `save`: Save result (default: `true`)
+- Results are always persisted to MongoDB
 - `expand`: Include full result in response (default: `false`)
-- `normalize`: Enable UMLS normalization (currently ignored by gateway; default: `false`)
-- `systems_csv`: Comma-separated target coding systems (relevant only if normalization were enabled)
-- `restrict_types_csv`: Comma-separated entity types to normalize (relevant only if normalization were enabled)
 
 #### `POST /extract-batch`
 Process multiple files in a single request.
@@ -237,7 +234,6 @@ Configuration is managed through environment variables. Create a `.env` file bas
 |----------|-------------|---------|
 | `MONGODB_URI` | MongoDB connection string | mongodb://mongo:27017 |
 | `MONGODB_DB` | Database name | medai |
-| `SAVE_RESULTS` | Enable result persistence | true |
 
 ### NER Service URLs (for microservices)
 
@@ -248,6 +244,13 @@ Configuration is managed through environment variables. Create a `.env` file bas
 | `NER_LSTM_CRF_URL` | BiLSTM-CRF service URL | http://ner-bilstm-crf:8005 |
 | `NER_LLM_URL` | LLM service URL | http://ner-llm:8003 |
 | `NER_CRF_URL` | CRF service URL | http://ner-crf:8004 |
+
+### NER Request Policy
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NER_REQUEST_TIMEOUT` | Timeout for NER service HTTP requests (seconds) | 120.0 |
+| `NER_RETRY_ATTEMPTS` | Max retry attempts for transient NER network/timeout errors | 3 |
 
 ### Transformer (RoBERTa) windowing
 
@@ -514,7 +517,9 @@ medai-backend/
 │       └── app/
 │           ├── main.py
 │           ├── config.py
-│           └── extractor.py
+│           ├── extractor.py   # GPT extraction (few-shot, structured output)
+│           ├── prompts.py     # System/extraction prompts and few-shot builder
+│           └── examples/      # Few-shot examples (gitignored)
 ├── shared/                    # Shared code between services
 │   └── schemas.py             # Shared Pydantic models
 ├── scripts/

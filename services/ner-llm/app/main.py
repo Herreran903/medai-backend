@@ -192,7 +192,7 @@ def predict(request: NERRequest):
     Extract clinical entities from text using LLM.
 
     Args:
-        request: NER request with text and configuration options
+        request: NER request with clinical text
 
     Returns:
         NERResponse: Extracted entities and metadata
@@ -223,7 +223,6 @@ def predict(request: NERRequest):
                 "model": "llm",
                 "provider": "gpt",
                 "count": 0,
-                "normalized": False,
             },
         )
 
@@ -253,7 +252,6 @@ def predict(request: NERRequest):
             "model": "llm",
             "provider": "gpt",
             "count": len(entities),
-            "normalized": False,  # LLM doesn't use UMLS normalization
             "inference_time_ms": round(inference_time_ms, 2),
         }
 

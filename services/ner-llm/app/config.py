@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     LLM NER Service configuration settings.
 
     All settings can be overridden via environment variables.
-    Example: GPT_MODEL="gpt-5.2" overrides the gpt_model field.
+    Example: GPT_MODEL="gpt-5.4" overrides the gpt_model field.
     """
 
     model_config = SettingsConfigDict(
@@ -44,8 +44,8 @@ class Settings(BaseSettings):
 
     # Model selection
     gpt_model: str = Field(
-        default="gpt-5.2",
-        description="GPT model identifier to use (default: gpt-5.2)",
+        default="gpt-5.4",
+        description="GPT model identifier to use (default: gpt-5.4)",
     )
 
 

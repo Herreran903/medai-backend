@@ -56,16 +56,14 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: medai-cloudflared-prod
-    # Uses host Cloudflare credentials (~/.cloudflared) and named tunnel.
-    # The host config usually targets localhost:8000; inside Docker that
-    # must route to the gateway service name.
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      set -eu;
-      test -f /etc/cloudflared/config.yml;
-      sed -E 's#credentials-file:[[:space:]]*(.*/)?([^/[:space:]]+\.json)[[:space:]]*$#credentials-file: /etc/cloudflared/\2#' /etc/cloudflared/config.yml |
-      sed -E 's#service:[[:space:]]*http://localhost:8000#service: http://gateway:8000#' > /tmp/config.yml;
-      exec cloudflared tunnel --no-autoupdate --config /tmp/config.yml run medai-backend
+    # Uses host Cloudflare credentials (~/.cloudflared).
+    # setup script generates config.docker.yml with Docker-safe paths/service.
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --config
+      - /etc/cloudflared/config.docker.yml
+      - run
     depends_on:
       - gateway
     volumes:

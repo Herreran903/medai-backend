@@ -204,9 +204,7 @@ def get_episode_repository(db: Database = Depends(get_db)):
     return EpisodeRepository(db)
 
 
-def get_extraction_service(
-    repository=Depends(get_episode_repository), settings: Settings = Depends(settings_dep)
-):
+def get_extraction_service(repository=Depends(get_episode_repository)):
     """
     Provide an ExtractionService instance as a FastAPI dependency.
 
@@ -216,7 +214,6 @@ def get_extraction_service(
 
     Args:
         repository: Episode repository (auto-injected via Depends).
-        settings: Application settings (auto-injected via Depends).
 
     Returns:
         ExtractionService: Service instance for extraction operations.
@@ -240,4 +237,4 @@ def get_extraction_service(
     """
     from app.services.extraction_service import ExtractionService
 
-    return ExtractionService(repository, settings)
+    return ExtractionService(repository)

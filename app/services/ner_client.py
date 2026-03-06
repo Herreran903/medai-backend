@@ -34,11 +34,11 @@ See Also:
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import httpx
 from tenacity import (
-    retry,
+    AsyncRetrying,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -177,23 +177,12 @@ class NERClient:
 
         return url_map[model]
 
-    @retry(
-        stop=stop_after_attempt(3),  # Max 3 attempts (configurable via settings)
-        wait=wait_exponential(multiplier=1, min=2, max=10),  # 2s, 4s, 8s backoff
-        retry=retry_if_exception_type(
-            (httpx.TimeoutException, httpx.NetworkError)
-        ),  # Only retry transient errors
-        reraise=True,  # Re-raise exception after all retries exhausted
-    )
     async def predict(
         self,
         model: str,
         text: str,
         *,
         model_variant: Optional[str] = None,
-        normalize: bool = False,
-        systems: Optional[List[str]] = None,
-        restrict_types: Optional[List[str]] = None,
     ) -> Dict:
         """
         Call NER service /predict endpoint with automatic retry.
@@ -206,9 +195,6 @@ class NERClient:
             model: Model identifier (transformer, lstm, lstm_crf, crf, llm)
             text: Input clinical text to process
             model_variant: Optional model variant (roberta, gpt; both fixed)
-            normalize: Whether to apply UMLS normalization
-            systems: Target coding systems for normalization
-            restrict_types: Entity types to include (empty = all types)
 
         Returns:
             Dict with "entities" (List[Dict]) and "meta" (Dict) keys
@@ -242,24 +228,32 @@ class NERClient:
             "text": text,
             "config": {
                 "model_variant": model_variant,
-                "normalize": normalize,
-                "systems": systems or [],
-                "restrict_types": restrict_types or [],
             },
         }
 
         try:
-            logger.debug(
-                f"Calling NER service: {endpoint} (text_length={len(text)}, variant={model_variant})"
+            retrying = AsyncRetrying(
+                stop=stop_after_attempt(self.settings.ner_retry_attempts),
+                wait=wait_exponential(multiplier=1, min=2, max=10),  # 2s, 4s, 8s backoff
+                retry=retry_if_exception_type(
+                    (httpx.TimeoutException, httpx.NetworkError)
+                ),  # Only retry transient errors
+                reraise=True,  # Re-raise exception after all retries exhausted
             )
-            response = await self._client.post(endpoint, json=payload)
-            response.raise_for_status()
 
-            result = response.json()
-            logger.debug(
-                f"NER service response: {len(result.get('entities', []))} entities"
-            )
-            return result
+            async for attempt in retrying:
+                with attempt:
+                    logger.debug(
+                        f"Calling NER service: {endpoint} (attempt={attempt.retry_state.attempt_number}/{self.settings.ner_retry_attempts}, text_length={len(text)}, variant={model_variant})"
+                    )
+                    response = await self._client.post(endpoint, json=payload)
+                    response.raise_for_status()
+
+                    result = response.json()
+                    logger.debug(
+                        f"NER service response: {len(result.get('entities', []))} entities"
+                    )
+                    return result
 
         except httpx.TimeoutException as e:
             logger.error(

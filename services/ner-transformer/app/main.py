@@ -211,7 +211,7 @@ def predict(request: NERRequest):
     Extract clinical entities from text using Transformer.
 
     Args:
-        request: NER request with text and configuration options
+        request: NER request with clinical text
 
     Returns:
         NERResponse: Extracted entities and metadata
@@ -242,7 +242,6 @@ def predict(request: NERRequest):
                 "model": "transformer",
                 "variant": "roberta",
                 "count": 0,
-                "normalized": False,
             },
         )
 
@@ -276,7 +275,6 @@ def predict(request: NERRequest):
             "model": "transformer",
             "variant": "roberta",
             "count": len(entities),
-            "normalized": False,  # Transformer doesn't use UMLS normalization
             "inference_time_ms": round(inference_time_ms, 2),
             "device": str(_extractor.device),
         }

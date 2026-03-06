@@ -66,3 +66,6 @@ setup.sh
 services/ner-bilstm/models/
 services/ner-bilstm-crf/models/
 services/ner-crf/models/
+
+# --- Few-shot examples (generated data, not source) ---
+services/ner-llm/app/examples/

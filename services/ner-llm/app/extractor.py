@@ -65,10 +65,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Logger configuration
 logger = logging.getLogger(__name__)
@@ -85,51 +84,25 @@ logger.setLevel(logging.INFO)
 # ==============================================================================
 
 
-class ClinicalEntity(BaseModel):
-    """
-    Pydantic model for LLM-extracted clinical entities.
+class LLMEntity(BaseModel):
+    """Pydantic model for LLM-extracted clinical entities (aligned with notebook)."""
 
-    This schema is used to validate and structure the JSON output from LLMs,
-    ensuring consistent entity format regardless of the underlying model.
+    model_config = ConfigDict(extra="ignore")
 
-    Attributes:
-        label: Entity type classification matching MedAI taxonomy.
-        value_raw: Exact text as it appears in the source document.
-        value_norm: Normalized value extracted from the entity text.
-
-    Note:
-        This schema is converted to JSON Schema for LLM prompting and
-        response validation.
-    """
-
-    label: str = Field(
-        ...,
-        description="Clinical entity type (e.g., FiO2, PEEP, TEMP, DX).",
-    )
-    value_raw: str = Field(
-        ...,
-        description="Exact text span including label/abbreviation and value (e.g., 'FiO2 60%', 'PEEP 8 cmH2O'). Include the clinical abbreviation when present in the text.",
-    )
-    value_norm: str = Field(
-        default="",
-        description="Normalized value in standard numeric format.",
-    )
+    type: str = Field(..., description="Tipo de entidad clinica (sin prefijos BIO)")
+    text: str = Field(..., description="Texto exacto de la entidad en el input")
+    start: int = Field(..., ge=0, description="Offset inicial (char)")
+    end: int = Field(..., ge=0, description="Offset final (char)")
+    score: Optional[float] = Field(0.0, ge=0.0, le=1.0, description="Confianza normalizada [0,1]")
+    code: Optional[str] = Field(None, description="Codigo clinico opcional")
 
 
-class ClinicalEntitiesResponse(BaseModel):
-    """
-    Structured response containing all extracted clinical entities.
+class LLMOutput(BaseModel):
+    """Structured response containing all extracted clinical entities."""
 
-    This is the top-level schema for LLM JSON output validation.
+    model_config = ConfigDict(extra="forbid")
 
-    Attributes:
-        entities: List of extracted clinical entities.
-    """
-
-    entities: List[ClinicalEntity] = Field(
-        default_factory=list,
-        description="List of clinical entities extracted from the text.",
-    )
+    entities: List[LLMEntity] = Field(default_factory=list)
 
 
 # ==============================================================================
@@ -153,189 +126,68 @@ Used for:
 - Grouping entities in output
 """
 
-LABEL_TO_CATEGORY: Dict[str, str] = {}
-"""Reverse mapping from entity label to category."""
 
-for category, labels in ENTITY_CATEGORIES.items():
-    for label in labels:
-        LABEL_TO_CATEGORY[label] = category
+# ==============================================================================
+# Prompts (imported from prompts.py — single source of truth)
+# ==============================================================================
+
+from .prompts import SYSTEM_PROMPT, build_user_prompt, load_few_shot_examples
 
 
 # ==============================================================================
-# System and Extraction Prompts
+# Helper Functions (aligned with notebook)
 # ==============================================================================
 
-SYSTEM_PROMPT = (
-    "Actuas exclusivamente como un extractor de entidades para evaluacion experimental de NER. "
-    "Recibiras textos ya preprocesados dentro de un pipeline comparativo que incluye BiLSTM y modelos fine-tuned; "
-    "por tanto, debes producir unicamente una salida estructurada estrictamente valida conforme al esquema Pydantic/JSON Schema proporcionado, "
-    "sin texto libre, sin explicaciones y sin encabezados. "
-    "La inferencia asume decodificacion guiada estricta (JSON Schema / FSM / XGrammar), por lo que solo estan permitidos tokens compatibles con el esquema. "
-    "Extrae todas las entidades presentes en el texto, indicando texto exacto, etiqueta y offsets de caracteres (start, end) alineados con el texto de entrada. "
-    "No inventes entidades, no cambies etiquetas, no omitas campos y no agregues claves adicionales. "
-    "Si existe ambiguedad, prioriza recall sin violar el esquema."
-)
 
-EXTRACTION_PROMPT = """Eres un experto en extraccion de entidades clinicas de notas medicas de pacientes en ventilacion mecanica.
+def _fix_schema_for_openai(obj: Any) -> None:
+    """Adjust schema recursively for OpenAI strict mode requirements."""
+    if isinstance(obj, dict):
+        if obj.get("type") == "object":
+            if "additionalProperties" not in obj:
+                obj["additionalProperties"] = False
+            if "properties" in obj:
+                all_props = list(obj["properties"].keys())
+                if "required" not in obj:
+                    obj["required"] = all_props
+                else:
+                    for prop in all_props:
+                        if prop not in obj["required"]:
+                            obj["required"].append(prop)
+        for value in obj.values():
+            _fix_schema_for_openai(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            _fix_schema_for_openai(item)
 
-Tu tarea es extraer UNICAMENTE las entidades clinicas mencionadas en el texto.
 
-IMPORTANTE - REGLAS DE EXTRACCION:
-1. SIEMPRE incluir la etiqueta/sigla cuando esté presente en el texto junto al valor
-2. Ejemplo: "FiO2 60%" -> extraer "FiO2 60%" (incluir la etiqueta "FiO2")
-3. Ejemplo: "PEEP 8 cmH2O" -> extraer "PEEP 8 cmH2O" (incluir la etiqueta "PEEP")
-4. Ejemplo: "VT 420 ml" -> extraer "VT 420 ml" (incluir la etiqueta "VT")
-5. Ejemplo: "modo AC VC" -> extraer "AC VC" (NO incluir la palabra descriptiva "modo")
-6. Si SOLO aparece el valor sin etiqueta en el texto, extraer solo el valor
+def _extract_json_block(text: str) -> str:
+    """Extract valid JSON from a text response (strips markdown fences, etc.)."""
+    if text.startswith("```"):
+        text = text.replace("```json", "", 1).replace("```", "").strip()
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(text):
+        if ch not in "{[":
+            continue
+        try:
+            _, end = decoder.raw_decode(text[idx:])
+            return text[idx : idx + end]
+        except json.JSONDecodeError:
+            continue
+    return text
 
-**CONFIGURACION DE VENTILACION:**
-- MODO: Modo del ventilador (sin palabras descriptivas como "modo", "en modo", "VMI")
-  Variantes: AC, VC, PC, PC+, VC+, SIMV, PSV, CPAP, PRVC, ACV, VCV, PCV, BiPAP
-  Ejemplos: "modo AC VC" -> extraer "AC VC", "en modo PC+" -> extraer "PC+", "VMI modo SIMV" -> extraer "SIMV"
 
-- FIO2: Fraccion inspirada de oxigeno (incluir etiqueta + valor)
-  Variantes: FiO2, FIO2, fio2, Fi02, fraccion inspirada de oxigeno
-  Ejemplos: "FiO2 40%", "fio2: 0.5", "FIO2 80%", "Fi02 100"
-
-- PEEP: Presion positiva al final de la espiracion
-  Variantes: PEEP, peep, Peep
-  Ejemplos: "PEEP 8", "peep: 10", "PEEP 12 cmH2O"
-
-- FR: Frecuencia respiratoria
-  Variantes: FR, fr, Freq resp, frecuencia respiratoria, rpm
-  Ejemplos: "FR 14/20", "fr: 18 rpm", "FR 20", "frecuencia respiratoria 22"
-
-- VT: Volumen tidal/corriente
-  Variantes: VT, Vt, vt, Vol, vol, VC (volumen corriente), volumen tidal
-  Ejemplos: "VT 380", "Vt: 450 mL", "Vol 480/490", "vol corriente 420"
-
-- FLUJO: Flujo inspiratorio
-  Variantes: Flujo, flujo, flow
-  Ejemplos: "Flujo 45", "flujo 50 L/min"
-
-- I_E: Relacion inspiracion:espiracion
-  Variantes: I:E, I/E, relacion I:E, Rel I:E, RIE
-  Ejemplos: "I:E 1:2", "1:2", "relacion 1:3", "Rel. 1:1.5"
-
-- SENS: Sensibilidad del trigger
-  Variantes: Sens, sens, sensibilidad, trigger
-  Ejemplos: "Sens 2", "sensibilidad: 3", "sens: 1.5"
-
-**RESPUESTA A LA VENTILACION:**
-- SAO2: Saturacion de oxigeno
-  Variantes: SaO2, SAO2, Sat, sat, saturacion, SO2, SpO2, SatO2
-  Ejemplos: "SaO2 95%", "Sat 92%", "saturacion 97%", "SO2 94%", "SpO2 98"
-
-- PP: Presion pico de via aerea
-  Variantes: PP, Ppico, P pico, presion pico, peak pressure
-  Ejemplos: "PP 25", "Ppico: 22", "presion pico 28", "P pico 30"
-
-- PMES: Presion meseta/plateau
-  Variantes: Pmes, Pmeseta, P meseta, plateau, presion meseta, P plateau
-  Ejemplos: "Pmeseta 18", "plateau 20", "P meseta: 22", "presion plateau 19"
-
-- PM: Poder mecanico
-  Variantes: PM, poder mecanico, mechanical power
-
-**ANTROPOMETRICOS:**
-- EDAD: Edad del paciente - SOLO valor y unidad
-  Variantes: anos, anos de edad, a, years
-  Correcto: "78 anos", "65 anos", "42 a"
-  Incorrecto: "edad 78 anos", "paciente de 65 anos de edad", "Edad: 70"
-
-- PESO: Peso corporal - SOLO valor y unidad, NO la palabra "peso"
-  Variantes: kg, kilos, kilogramos, Kg, KG
-  Correcto: "65 kg", "72 kg", "95", "80 kilos"
-  Incorrecto: "Peso 65 kg", "peso: 72 kg", "Peso(Kg): 70"
-
-**SIGNOS VITALES:**
-- TEMP: Temperatura corporal
-  Variantes: T, Temp, temperatura, temp max, temp min, celsius
-  Ejemplos: "T 36.5", "Temp: 37.2", "36.8 C", "T 37C", "temperatura 38.5"
-
-- PA: Presion arterial completa (sistolica/diastolica)
-  Variantes: PA, TA, presion arterial, tension arterial, PA(mmHg)
-  Ejemplos: "PA 120/80", "TA: 130/85", "TA 110/70 mmHg", "presion arterial 125/80"
-
-- PAS: Presion arterial sistolica SOLAMENTE
-  Variantes: PAS, TAS, presion sistolica, tension sistolica, sistolica
-  Ejemplos: "TAS 125", "PAS 140", "TAS menor 150", "sistolica 130"
-
-- PAM: Presion arterial media
-  Variantes: PAM, TAM, presion arterial media, tension arterial media, MAP
-  Ejemplos: "PAM 85", "TAM: 78", "PAM 65 mmHg", "TAM 70"
-
-- FC: Frecuencia cardiaca
-  Variantes: FC, fc, frecuencia cardiaca, pulso, lpm, lat/min, latidos
-  Ejemplos: "FC 82", "FC: 75 lpm", "fc 90", "frecuencia cardiaca 88"
-
-- GLICEMIA: Glucosa/glucometria en sangre
-  Variantes: Glicemia, glicemia, glucometria, glucosa, HGT, dextrostix, mg/dL
-  Ejemplos: "Glicemia 120", "glucometria: 145", "125-130-140 mg/dL", "HGT 110"
-
-- POSTURA: Posicion/posicionamiento del paciente
-  Variantes: posicion, postura, decubito, cabecera, fowler, semifowler, prono, supino
-  Ejemplos: "Cabecera 30", "supino", "prono", "decubito lateral", "semifowler", "Cabecera 45 grados", "posicion fowler"
-
-**DIAGNOSTICOS (DX):**
-- DX: Diagnosticos clinicos - extraer SOLO el nucleo diagnostico (2-5 palabras max)
-  Variantes: diagnostico, Dx, dx, impresion diagnostica
-  Correcto: "SDRA severo", "Falla ventilatoria", "Shock septico", "NAV", "Neumonia asociada a ventilador"
-  Correcto: "HTA", "DM2", "EPOC", "IRC", "ERC", "IAM" (siglas de diagnosticos)
-  Incorrecto: "paciente con antecedente de falla ventilatoria tipo 2" (muy largo)
-  Incorrecto: "se considera SDRA severo por criterios de Berlin" (incluye explicacion)
-
-**GASES ARTERIALES:**
-- PH: pH sanguineo
-  Variantes: pH, ph, PH
-  Ejemplos: "pH 7.35", "ph: 7.42", "PH 7.28"
-
-- PACO2: Presion parcial de CO2
-  Variantes: PaCO2, PCO2, pCO2, CO2, paco2
-  Ejemplos: "PaCO2 42", "pCO2: 38", "PCO2 45", "CO2 40"
-
-- HCO3: Bicarbonato
-  Variantes: HCO3, HCO3-, bicarbonato, Bic
-  Ejemplos: "HCO3 24", "bicarbonato: 22", "HCO3- 26", "Bic 23"
-
-- BE: Exceso de base
-  Variantes: BE, EB, exceso de base, base excess
-  Ejemplos: "BE -2", "EB: +1", "BE 3.5", "exceso de base -4"
-
-- PAO2: Presion parcial de O2
-  Variantes: PaO2, PO2, pO2, pao2
-  Ejemplos: "PaO2 85", "pO2: 92", "PO2 78"
-
-- PAFI: Relacion PaO2/FiO2
-  Variantes: PAFI, PaFi, PaFiO2, pafi, Pa/Fi, relacion PaO2/FiO2, indice de Kirby
-  Ejemplos: "PaFi 180", "PAFI: 250", "pafi 120", "Pa/Fi 200"
-
-**REGLAS CRITICAS:**
-1. NO incluir palabras descriptivas como "modo", "peso", "edad", "temperatura" antes del valor
-2. SI incluir siglas medicas (FiO2, PEEP, FC, TAM, etc.) cuando estan junto al valor numerico
-3. Para DX: extraer solo el diagnostico, no la oracion completa
-4. Buscar TODAS las variantes de cada entidad listadas arriba
-5. Extraer TODAS las entidades que encuentres, priorizar recall sobre precision
-6. OBLIGATORIO: Calcular start y end (offsets de caracteres) para cada entidad
-   - start: posicion del primer caracter de la entidad en el texto (0-indexed)
-   - end: posicion del caracter DESPUES del ultimo caracter de la entidad
-   - Ejemplo: en "Peso 65 kg", si extraes "65 kg", start=5, end=10
-
-Texto a analizar:
-{text}
-
-Extrae las entidades en formato JSON estructurado."""
-"""
-Prompt template for clinical entity extraction.
-
-The prompt instructs the LLM to:
-1. Extract only explicitly mentioned entities
-2. Preserve raw text values
-3. Normalize values to standard formats
-4. Return structured JSON output
-
-The ``{text}`` placeholder is replaced with the input clinical note.
-"""
+def _normalize_llm_payload(payload: Any) -> dict:
+    """Normalize various LLM response shapes into {"entities": [...]}."""
+    if isinstance(payload, list):
+        return {"entities": payload}
+    if isinstance(payload, dict):
+        if "entities" in payload:
+            return payload
+        if any(k in payload for k in ("type", "text", "start", "end", "score", "code")):
+            return {"entities": [payload]}
+        if "$defs" in payload or "properties" in payload:
+            return {"entities": []}
+    return {"entities": []}
 
 
 # ==============================================================================
@@ -345,19 +197,23 @@ The ``{text}`` placeholder is replaced with the input clinical note.
 
 class GPTLLMExtractor:
     """
-    Clinical entity extractor using OpenAI GPT.
+    Clinical entity extractor using OpenAI GPT (aligned with LLM.ipynb notebook).
 
     Uses OpenAI Chat Completions with structured outputs (JSON schema mode) to
-    return valid JSON that matches :class:`ClinicalEntitiesResponse`.
+    return valid JSON that matches :class:`LLMOutput`. Prompts and few-shot
+    examples are loaded from ``prompts.py`` and ``examples/`` respectively.
 
     Architecture:
         Uses ``response_format={"type": "json_schema", ...}`` in strict mode
         when available, and falls back to prompt-based JSON parsing if needed.
+        Few-shot prompting is hardcoded (prompt_mode="few_shot").
 
     Attributes:
         api_key: OpenAI API key for authentication.
-        model: GPT model identifier (default: gpt-5.2).
+        model: GPT model identifier (default: gpt-5.4).
         client: OpenAI client instance (lazy-initialized).
+        entity_types: Sorted list of entity type labels from ENTITY_CATEGORIES.
+        few_shot_examples: Few-shot examples loaded at init.
 
     Example:
         >>> extractor = GPTLLMExtractor()
@@ -372,28 +228,22 @@ class GPTLLMExtractor:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-5.2",  # Default: GPT-5.2 (temperature is fixed to 0)
+        model: str = "gpt-5.4",
     ) -> None:
-        """
-        Initialize the GPT extractor with deterministic configuration.
-
-        Configuration:
-            - Model: gpt-5.2 (default)
-            - Temperature: 0.0 (deterministic outputs)
-            - System Prompt: Clinical NER extraction instructions
-
-        Args:
-            api_key: OpenAI API key. If not provided, reads from
-                ``OPENAI_API_KEY`` environment variable.
-            model: GPT model identifier. Defaults to gpt-5.2.
-
-        Raises:
-            Warning logged if API key is not configured.
-        """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.model = model
-        self.temperature = 0.0  # Fixed for reproducibility
+        # Keep provider default temperature to preserve compatibility with
+        # models that do not accept custom temperature values.
+        self.temperature: Optional[float] = None
         self.client = None
+
+        # Derive entity types from category mapping
+        self.entity_types = sorted(
+            {label for labels in ENTITY_CATEGORIES.values() for label in labels}
+        )
+
+        # Load few-shot examples (empty list if file not found)
+        self.few_shot_examples = load_few_shot_examples()
 
         if self.api_key:
             try:
@@ -412,47 +262,8 @@ class GPTLLMExtractor:
                 "OPENAI_API_KEY not configured. Extractor will not function."
             )
 
-    def _calculate_offsets(self, text: str, entity_text: str) -> tuple[int, int]:
-        """
-        Calculate character offsets for an entity in the source text.
-
-        Args:
-            text: Complete source text.
-            entity_text: Entity text span to locate.
-
-        Returns:
-            Tuple of (start, end) character positions, or (-1, -1) if not found.
-        """
-        start = text.find(entity_text)
-        if start == -1:
-            pattern = re.escape(entity_text)
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                start = match.start()
-                end = match.end()
-            else:
-                return (-1, -1)
-        else:
-            end = start + len(entity_text)
-
-        return (start, end)
-
     def predict(self, text: str) -> List[Dict[str, Any]]:
-        """
-        Extract clinical entities from text using GPT.
-
-        Uses OpenAI's structured outputs feature for guaranteed JSON schema
-        compliance.
-
-        Args:
-            text: Clinical note text to process.
-
-        Returns:
-            List of entity dictionaries compatible with the pipeline format.
-
-        Note:
-            Falls back to prompt-based JSON if structured outputs fail.
-        """
+        """Extract clinical entities from text using GPT (aligned with notebook)."""
         if not self.client:
             logger.error("OpenAI client not initialized. Returning empty list.")
             return []
@@ -461,111 +272,78 @@ class GPTLLMExtractor:
             return []
 
         try:
-            prompt = EXTRACTION_PROMPT.format(text=text)
-            schema = ClinicalEntitiesResponse.model_json_schema()
+            schema = LLMOutput.model_json_schema()
+
+            # Build user prompt with few-shot (hardcoded)
+            user_prompt = build_user_prompt(
+                text,
+                self.entity_types,
+                schema,
+                prompt_mode="few_shot",
+                few_shot_examples=self.few_shot_examples,
+            )
 
             # Prepare schema for OpenAI strict mode
             openai_schema = schema.copy()
+            _fix_schema_for_openai(openai_schema)
 
-            def fix_schema_for_openai(obj):
-                """Adjust schema for OpenAI strict mode requirements."""
-                if isinstance(obj, dict):
-                    if "type" in obj and obj["type"] == "object":
-                        if "additionalProperties" not in obj:
-                            obj["additionalProperties"] = False
-                        if "properties" in obj:
-                            all_props = list(obj["properties"].keys())
-                            if "required" not in obj:
-                                obj["required"] = all_props
-                            else:
-                                for prop in all_props:
-                                    if prop not in obj["required"]:
-                                        obj["required"].append(prop)
-                    for key, value in obj.items():
-                        fix_schema_for_openai(value)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        fix_schema_for_openai(item)
-
-            fix_schema_for_openai(openai_schema)
-
-            # Use structured outputs (JSON schema mode)
+            # API call with structured outputs
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": SYSTEM_PROMPT,
-                        },
-                        {"role": "user", "content": prompt},
+                request_kwargs = {
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
                     ],
-                    response_format={
+                    "response_format": {
                         "type": "json_schema",
                         "json_schema": {
-                            "name": "clinical_entities_extraction",
+                            "name": "ClinicalEntities",
                             "strict": True,
                             "schema": openai_schema,
                         },
                     },
-                    temperature=self.temperature,
-                    max_completion_tokens=4096,
-                )
-                content = response.choices[0].message.content
+                    "max_completion_tokens": 4000,
+                }
+                if self.temperature is not None:
+                    request_kwargs["temperature"] = self.temperature
+
+                response = self.client.chat.completions.create(**request_kwargs)
+                raw = response.choices[0].message.content
+                payload = json.loads(raw)
             except Exception as e:
                 # Fallback without structured outputs
                 logger.warning("Structured outputs failed, using fallback: %s", e)
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": SYSTEM_PROMPT,
-                        },
-                        {"role": "user", "content": prompt},
+                fallback_kwargs = {
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
                     ],
-                    temperature=self.temperature,
-                    max_completion_tokens=4096,
-                )
-                content = response.choices[0].message.content
+                    "max_completion_tokens": 4000,
+                }
+                if self.temperature is not None:
+                    fallback_kwargs["temperature"] = self.temperature
 
-            # Validate response
-            try:
-                entities_response = ClinicalEntitiesResponse.model_validate_json(
-                    content
-                )
-            except Exception:
-                try:
-                    m = re.search(r"\{.*\}|\[.*\]", content, re.DOTALL)
-                    if not m:
-                        raise ValueError("No JSON found in model output")
-                    raw_json = m.group(0)
-                    if raw_json.lstrip().startswith("["):
-                        wrapped = json.dumps({"entities": json.loads(raw_json)})
-                        entities_response = (
-                            ClinicalEntitiesResponse.model_validate_json(wrapped)
-                        )
-                    else:
-                        entities_response = (
-                            ClinicalEntitiesResponse.model_validate_json(raw_json)
-                        )
-                except Exception as e2:
-                    logger.error("Error validating GPT JSON output: %s", e2)
-                    return []
+                response = self.client.chat.completions.create(**fallback_kwargs)
+                raw = response.choices[0].message.content
+                raw_json = _extract_json_block(raw)
+                payload = json.loads(raw_json)
+
+            # Normalize and validate
+            payload = _normalize_llm_payload(payload)
+            llm_output = LLMOutput.model_validate(payload)
 
             # Convert to pipeline-compatible format
             result = []
-            for entity in entities_response.entities:
-                start, end = self._calculate_offsets(text, entity.value_raw)
-
-                entity_dict = {
-                    "type": entity.label,
-                    "text": entity.value_raw,
-                    "start": start if start >= 0 else None,
-                    "end": end if end >= 0 else None,
-                    "code": entity.value_norm,
-                }
-                result.append(entity_dict)
+            for entity in llm_output.entities:
+                result.append({
+                    "type": entity.type,
+                    "text": entity.text,
+                    "start": entity.start,
+                    "end": entity.end,
+                    "code": entity.code,
+                })
 
             logger.info("Extracted %d clinical entities with GPT", len(result))
             return result
@@ -600,8 +378,9 @@ class LLMExtractor:
 
     Configuration:
         - Provider: GPT (forced)
-        - Model: gpt-5.2 (default)
-        - Temperature: 0.0 (deterministic)
+        - Model: gpt-5.4 (default)
+        - Temperature: provider default
+        - Prompting: few-shot (hardcoded)
 
     Attributes:
         provider: Always "gpt" (fixed).
@@ -618,14 +397,14 @@ class LLMExtractor:
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-5.2",
+        model: str = "gpt-5.4",
     ) -> None:
         """
         Initialize the LLM extractor (GPT-only).
 
         Args:
             api_key: OpenAI API key. Required.
-            model: Model identifier (defaults to gpt-5.2).
+            model: Model identifier (defaults to gpt-5.4).
 
         Raises:
             ValueError: If OpenAI API key is not provided.

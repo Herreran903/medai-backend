@@ -65,10 +65,6 @@ class Settings(BaseSettings):
         mongodb_uri: MongoDB connection string. Supports replica sets and
             authentication parameters.
         mongodb_db: Target database name within the MongoDB instance.
-        save_results: Global flag to enable/disable persistence of extraction results.
-            When False, the API operates in stateless mode.
-        default_model: Fallback model identifier when no model is specified in requests.
-            Must be a key in :data:`app.services.registry.MODEL_REGISTRY`.
 
     Configuration Loading:
         Settings are loaded from environment variables with fallback to `.env.dev`.
@@ -127,20 +123,6 @@ class Settings(BaseSettings):
         description="Target MongoDB database name for episode and note storage.",
     )
 
-    save_results: bool = Field(
-        default=True,
-        description="Enable persistence of extraction results to MongoDB.",
-    )
-
-    default_model: str = "transformer"
-    """
-    Default extraction model when not specified in API requests.
-    
-    Must correspond to a key in :data:`app.services.registry.MODEL_REGISTRY`.
-    The transformer model provides the best balance of accuracy and performance
-    for clinical NER tasks.
-    """
-
     # Microservices configuration (always remote - gateway delegates to NER services)
     ner_transformer_url: str = Field(
         default="http://ner-transformer:8001",
@@ -170,6 +152,12 @@ class Settings(BaseSettings):
     ner_request_timeout: float = Field(
         default=120.0,
         description="Timeout for HTTP requests to NER services in seconds.",
+    )
+
+    ner_retry_attempts: int = Field(
+        default=3,
+        ge=1,
+        description="Max retry attempts for transient NER service errors.",
     )
 
     @field_validator("cors_origins", mode="before")

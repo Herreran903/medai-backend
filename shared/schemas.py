@@ -29,9 +29,6 @@ class NERConfig(BaseModel):
     """Configuration options for NER extraction."""
 
     model_variant: Optional[str] = Field(default=None, description="Model variant")
-    normalize: bool = Field(default=False, description="Apply UMLS normalization")
-    systems: List[str] = Field(default_factory=list, description="Target coding systems")
-    restrict_types: List[str] = Field(default_factory=list, description="Entity types filter")
 
 
 class NERRequest(BaseModel):

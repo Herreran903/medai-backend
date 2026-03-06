@@ -192,18 +192,13 @@ def predict(request: NERRequest):
             meta={
                 "model": "crf",
                 "count": 0,
-                "normalized": False,
             },
         )
 
     try:
         start_time = time.time()
 
-        restrict_types = None
-        if request.config and request.config.restrict_types:
-            restrict_types = request.config.restrict_types
-
-        raw_entities = _extractor.predict(request.text, restrict_types=restrict_types)
+        raw_entities = _extractor.predict(request.text)
 
         inference_time_ms = (time.time() - start_time) * 1000
 
@@ -218,7 +213,6 @@ def predict(request: NERRequest):
         meta = {
             "model": "crf",
             "count": len(entities),
-            "normalized": False,
             "inference_time_ms": round(inference_time_ms, 2),
         }
 

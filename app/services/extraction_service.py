@@ -20,7 +20,7 @@ Usage:
     >>> from app.services.extraction_service import ExtractionService
     >>> from app.repositories import EpisodeRepository
     >>>
-    >>> service = ExtractionService(repository, settings)
+    >>> service = ExtractionService(repository)
     >>> result = await service.extract_single(
     ...     text="Paciente con FiO2 60%",
     ...     model="transformer",
@@ -36,7 +36,6 @@ from typing import Dict, List, Optional
 
 from fastapi import HTTPException, UploadFile
 
-from app.config import Settings
 from app.repositories import EpisodeRepository
 from app.schemas import (
     BatchAckItem,
@@ -60,19 +59,16 @@ class ExtractionService:
 
     Attributes:
         repository: Episode repository for data access
-        settings: Application settings
     """
 
-    def __init__(self, repository: EpisodeRepository, settings: Settings):
+    def __init__(self, repository: EpisodeRepository):
         """
         Initialize extraction service.
 
         Args:
             repository: Episode repository instance
-            settings: Application settings
         """
         self.repository = repository
-        self.settings = settings
 
     @staticmethod
     def _parse_iso8601(dt: Optional[str]) -> Optional[datetime]:
@@ -108,21 +104,6 @@ class ExtractionService:
                     status_code=400, detail="Invalid note_date format"
                 )
 
-    @staticmethod
-    def _parse_csv(v: Optional[str]) -> List[str]:
-        """
-        Parse comma-separated string to list.
-
-        Args:
-            v: Comma-separated string
-
-        Returns:
-            List of trimmed non-empty strings
-        """
-        if not v:
-            return []
-        return [p.strip() for p in v.split(",") if p.strip()]
-
     async def _extract_from_text(self, *args, **kwargs):
         """
         Lazy import wrapper for extraction pipeline.
@@ -142,10 +123,6 @@ class ExtractionService:
         model_variant: Optional[str] = None,
         episode_id: str,
         note_date: str,
-        save: bool = True,
-        normalize: bool = False,
-        systems_csv: Optional[str] = None,
-        restrict_types_csv: Optional[str] = None,
         expand: bool = False,
         filename_override: Optional[str] = None,
     ) -> ExtractAck:
@@ -166,10 +143,6 @@ class ExtractionService:
             model_variant: Model variant (roberta for transformer, gpt for llm; both fixed)
             episode_id: Clinical episode identifier
             note_date: Note date in ISO 8601 format
-            save: Whether to persist results
-            normalize: Whether to apply UMLS normalization (currently disabled)
-            systems_csv: Comma-separated target coding systems
-            restrict_types_csv: Comma-separated entity types to normalize
             expand: Include full result in response
             filename_override: Override filename (for batch processing)
 
@@ -203,13 +176,6 @@ class ExtractionService:
             )
         note_date_iso = note_dt.isoformat()
 
-        # Parse normalization parameters
-        systems = self._parse_csv(systems_csv)
-        restrict_types = self._parse_csv(restrict_types_csv)
-
-        # Normalization temporarily disabled to avoid extra model loads
-        normalize = False
-
         # Call extraction pipeline
         logger.info(
             f"Extracting entities: model={model}, variant={model_variant}, "
@@ -218,29 +184,22 @@ class ExtractionService:
 
         result = await self._extract_from_text(
             text or "",
-            model=model or self.settings.default_model,
+            model=model or "transformer",
             model_variant=model_variant,
-            normalize=bool(normalize),
-            systems=systems,
-            restrict_types=restrict_types or None,
         )
 
-        # Persist results if requested
-        note_id = None
-        stored = False
-
-        if save and self.settings.save_results:
-            note_id = await self._save_extraction_result(
-                text=text or "",
-                result=result,
-                model=model,
-                episode_id=episode_id,
-                note_date_iso=note_date_iso,
-                filename=actual_filename,
-                source_system="api.extract",
-            )
-            stored = True
-            logger.info(f"Saved extraction result: note_id={note_id}")
+        # Persist results unconditionally.
+        note_id = await self._save_extraction_result(
+            text=text or "",
+            result=result,
+            model=model,
+            episode_id=episode_id,
+            note_date_iso=note_date_iso,
+            filename=actual_filename,
+            source_system="api.extract",
+        )
+        stored = True
+        logger.info(f"Saved extraction result: note_id={note_id}")
 
         # Build acknowledgment response
         return ExtractAck(
@@ -260,10 +219,6 @@ class ExtractionService:
         files: List[UploadFile],
         model: str,
         model_variant: Optional[str] = None,
-        save: bool = True,
-        normalize: bool = False,
-        systems_csv: Optional[str] = None,
-        restrict_types_csv: Optional[str] = None,
         notes_meta_json: Optional[str] = None,
     ) -> BatchAckResponse:
         """
@@ -276,10 +231,6 @@ class ExtractionService:
             files: List of uploaded files
             model: Extraction model identifier
             model_variant: Model variant
-            save: Whether to persist results
-            normalize: Whether to apply UMLS normalization
-            systems_csv: Target coding systems
-            restrict_types_csv: Entity types to normalize
             notes_meta_json: JSON array with per-file metadata
 
         Returns:
@@ -329,10 +280,6 @@ class ExtractionService:
                     model_variant=model_variant,
                     episode_id=episode_id,
                     note_date=note_date,
-                    save=save,
-                    normalize=normalize,
-                    systems_csv=systems_csv,
-                    restrict_types_csv=restrict_types_csv,
                     expand=False,
                     filename_override=f.filename,
                 )

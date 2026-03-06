@@ -19,7 +19,7 @@ import logging
 import pickle
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 try:
     import joblib
@@ -122,8 +122,6 @@ def _bio_to_entities(
     text: str,
     tags: Sequence[str],
     spans: Sequence[Tuple[int, int]],
-    *,
-    restrict_types: Optional[set[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Convert BIO tag sequence to entity spans.
@@ -145,16 +143,15 @@ def _bio_to_entities(
             end_char = spans[min(j0 - 1, T - 1)][1]
 
             if 0 <= start_char < end_char <= len(text):
-                if restrict_types is None or ent_type in restrict_types:
-                    out.append(
-                        {
-                            "type": ent_type,
-                            "text": text[start_char:end_char],
-                            "start": int(start_char),
-                            "end": int(end_char),
-                            "code": None,
-                        }
-                    )
+                out.append(
+                    {
+                        "type": ent_type,
+                        "text": text[start_char:end_char],
+                        "start": int(start_char),
+                        "end": int(end_char),
+                        "code": None,
+                    }
+                )
             i = j0
             continue
 
@@ -221,8 +218,6 @@ class CRFExtractor:
     def predict(
         self,
         text: str,
-        *,
-        restrict_types: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         if not text:
             return []
@@ -239,8 +234,7 @@ class CRFExtractor:
             logger.error("CRF prediction failed: %s", e, exc_info=True)
             raise
 
-        restrict_set = set(restrict_types) if restrict_types else None
-        return _bio_to_entities(text, y_pred, spans, restrict_types=restrict_set)
+        return _bio_to_entities(text, y_pred, spans)
 
     def meta(self) -> Dict[str, Any]:
         return {
