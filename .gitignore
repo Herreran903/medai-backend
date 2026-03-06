@@ -56,3 +56,13 @@ scripts/export_openapi_docs.sh
 # --- Claude Code / AI Tools ---
 .agents/
 .claude/
+
+# --- Local thesis/docs helper files (not part of runtime source) ---
+TESIS.md
+TESIS-README.md
+setup.sh
+
+# --- Local model artifacts (keep out of git history) ---
+services/ner-bilstm/models/
+services/ner-bilstm-crf/models/
+services/ner-crf/models/
