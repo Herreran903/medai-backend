@@ -23,7 +23,7 @@ Pipeline Flow:
             │
             ▼
         ┌─────────────────┐
-        │ Model Selection │ ← MODEL_REGISTRY / Transformer Cache
+        │ Model Selection │ ← MODEL_REGISTRY (validation only)
         └────────┬────────┘
                  │
                  ▼
@@ -44,12 +44,10 @@ Pipeline Flow:
                  ▼
         ExtractResponse
 
-Model Caching:
-    Transformer models are cached in memory to avoid repeated weight loading:
-
-    - Cache key: ``transformer:{variant}`` (e.g., "transformer:roberta")
-    - Cache is module-level, persists for application lifetime
-    - BiLSTM and LLM models use :data:`app.services.registry.MODEL_REGISTRY`
+Microservices Routing:
+    The gateway does not load model weights locally. It validates model names
+    against :data:`app.services.registry.MODEL_REGISTRY` and routes requests
+    to dedicated NER services via HTTP.
 
 Usage:
     >>> from app.services.pipeline import extract_from_text
@@ -111,8 +109,8 @@ async def extract_from_text(
 
         model_variant: Model-specific variant selection:
 
-            - For ``transformer``: "roberta" (fixed for experiments)
-            - For ``llm``: "gpt" (fixed for experiments)
+            - For ``transformer``: "roberta" (fixed)
+            - For ``llm``: "gpt" (fixed)
             - Ignored for ``lstm``, ``lstm_crf``, and ``crf``
 
         normalize: Whether to request terminology normalization from the NER service.
@@ -135,8 +133,8 @@ async def extract_from_text(
 
     Pipeline Steps:
         1. **Input Validation**: Coerce text to string
-        2. **Model Resolution**: Select extractor from registry or cache
-        3. **Extraction**: Call model's ``predict()`` method
+        2. **Model Resolution**: Validate model against registry
+        3. **Extraction**: Route request to NER microservice via HTTP
         4. **Entity Validation**: Validate spans and construct Entity objects
         5. **Normalization**: Regex value normalization; optional terminology normalization downstream
         6. **Response Construction**: Build ExtractResponse with metadata
@@ -159,9 +157,8 @@ async def extract_from_text(
         ... )
 
     Note:
-        Model loading occurs on first use. Transformer models are cached
-        for subsequent requests. BiLSTM and LLM models are initialized
-        at application startup via MODEL_REGISTRY.
+        Model lifecycle is handled by the NER microservices. The gateway only
+        validates model identifiers and orchestrates HTTP calls.
     """
     # Input validation: ensure text is always a string
     if text is None:

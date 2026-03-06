@@ -162,7 +162,8 @@ class ExtractResponse(BaseModel):
     Metadata Fields:
         The ``meta`` dictionary contains:
 
-        - ``model``: Identifier of the model used (e.g., "lstm", "transformer", "llm")
+        - ``model``: Identifier of the model used
+          (e.g., "lstm", "lstm_crf", "crf", "transformer", "llm")
         - ``inference_time_ms``: Inference time in milliseconds
         - ``entity_count``: Number of entities extracted
 

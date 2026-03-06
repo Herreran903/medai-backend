@@ -2,11 +2,11 @@
 Configuration settings for the LLM NER microservice.
 
 This module defines environment-based configuration for the LLM service,
-including API keys, provider selection, and service settings.
+including API keys, model selection, and service settings.
 """
 
 from functools import lru_cache
-from typing import Literal, Optional
+from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     LLM NER Service configuration settings.
 
     All settings can be overridden via environment variables.
-    Example: LLM_PROVIDER="gpt" overrides the llm_provider field.
+    Example: GPT_MODEL="gpt-5.2" overrides the gpt_model field.
     """
 
     model_config = SettingsConfigDict(
@@ -36,40 +36,16 @@ class Settings(BaseSettings):
         description="Logging level (debug, info, warning, error, critical)",
     )
 
-    # LLM provider selection (FIXED: Only GPT for experiments)
-    llm_provider: Literal["gpt"] = Field(
-        default="gpt",
-        description="LLM provider to use (FIXED: only gpt for experiments)",
-    )
-
     # API keys
-    anthropic_api_key: Optional[str] = Field(
-        default=None,
-        description="Legacy Anthropic API key (Claude provider disabled in experiments)",
-    )
     openai_api_key: Optional[str] = Field(
         default=None,
         description="OpenAI API key for GPT provider",
     )
 
     # Model selection
-    claude_model: str = Field(
-        default="claude-sonnet-4-5-20250929",
-        description="Legacy Claude model identifier (disabled in experiments)",
-    )
     gpt_model: str = Field(
         default="gpt-5.2",
-        description="GPT model to use (FIXED: gpt-5.2 for experiments)",
-    )
-
-    # Local LLM settings (for future Ollama integration)
-    local_llm_url: str = Field(
-        default="http://localhost:11434",
-        description="Ollama API endpoint URL",
-    )
-    local_llm_model: str = Field(
-        default="llama3",
-        description="Local model name in Ollama",
+        description="GPT model identifier to use (default: gpt-5.2)",
     )
 
 

@@ -5,13 +5,15 @@ This module implements a BiLSTM-based Named Entity Recognition (NER) extractor
 for clinical text, specifically trained on mechanical ventilation notes in Spanish.
 
 Architecture Context:
-    The BiLSTM extractor is one of three NER models available in MedAI:
+    The BiLSTM-CRF extractor is one of five NER models available in MedAI:
 
-    - **BiLSTM** (this module): BiLSTM-CRF with BIO tagging, trained on domain data
-    - **Transformer**: Fine-tuned RoBERTa (fixed for experiments)
-    - **LLM**: GPT-based extraction (fixed for experiments)
+    - **BiLSTM**: BiLSTM with BIO tagging (no CRF)
+    - **BiLSTM-CRF** (this module): BiLSTM + CRF decoding (Viterbi) with BIO tagging
+    - **CRF**: sklearn-crfsuite model
+    - **Transformer**: Fine-tuned RoBERTa (fixed)
+    - **LLM**: GPT-based extraction (fixed)
 
-    The BiLSTM model provides fast inference with moderate accuracy, suitable
+    The BiLSTM-CRF model provides fast inference with moderate accuracy, suitable
     for high-throughput scenarios where transformer latency is prohibitive.
 
 Model Architecture:
@@ -52,7 +54,7 @@ Usage:
 Configuration:
     The model directory can be specified via constructor or defaults to:
     ``/app/models/model/`` (container) or
-    ``services/ner-bilstm/models/model/`` (local development).
+    ``services/ner-bilstm-crf/models/model/`` (local development).
 
 Note:
     Token encoding preserves original casing. The vocabulary contains
@@ -470,14 +472,14 @@ class LSTMExtractor:
         Returns:
             Dictionary containing:
 
-            - ``extractor``: Model type identifier ("lstm")
+            - ``extractor``: Model type identifier ("lstm_crf")
             - ``model_dir``: Path to model files
             - ``vocab_size``: Number of words in vocabulary
             - ``num_tags``: Number of BIO tags
             - ``max_len``: Maximum sequence length
         """
         return {
-            "extractor": "lstm",
+            "extractor": "lstm_crf",
             "model_dir": str(self.model_dir),
             "vocab_size": len(self.word2idx),
             "num_tags": len(self.tag2idx),

@@ -4,7 +4,9 @@ Transformer NER Microservice - FastAPI Application.
 This microservice provides clinical Named Entity Recognition using
 a fine-tuned Spanish RoBERTa model via a REST API.
 
-FIXED FOR EXPERIMENTS: Only RoBERTa variant is used. BETO is disabled.
+Notes:
+    - RoBERTa is the only supported variant in this service.
+    - Long notes are handled with sliding-window tokenization (max_len/stride).
 
 Endpoints:
     - POST /predict: Extract entities from clinical text
@@ -54,7 +56,7 @@ app = FastAPI(
     version="1.0.0",
     description=(
         "Clinical Named Entity Recognition microservice using fine-tuned Spanish "
-        "RoBERTa model (FIXED for experiments). Extracts structured medical entities "
+        "RoBERTa model. Extracts structured medical entities "
         "from Spanish clinical notes with focus on mechanical ventilation parameters."
     ),
 )
@@ -74,7 +76,7 @@ async def startup_event():
     """
     Initialize Transformer extractor at startup.
 
-    FIXED: Always loads RoBERTa model from Hugging Face Hub.
+    Loads the RoBERTa model from Hugging Face Hub (cached after first run).
     """
     global _extractor, _model_loaded
 
@@ -83,25 +85,32 @@ async def startup_event():
         _model_loaded = False
         return
 
-    logger.info("Starting Transformer NER service (FIXED: RoBERTa only)")
+    logger.info("Starting Transformer NER service (RoBERTa)")
 
     try:
-        # FIXED: Always use RoBERTa for experiments
         model_id = settings.transformer_roberta_model_id
 
         logger.info(f"Loading Transformer model: {model_id}")
         logger.info(f"Device: {settings.device or 'auto-detect'}")
+        logger.info(
+            f"Windowing: max_len={settings.transformer_max_len}, "
+            f"stride={settings.transformer_stride}, "
+            f"window_batch_size={settings.transformer_window_batch_size}"
+        )
 
         # Initialize extractor
         _extractor = TransformerExtractor(
             model_id=model_id,
             device=settings.device,
+            max_len=settings.transformer_max_len,
+            stride=settings.transformer_stride,
+            window_batch_size=settings.transformer_window_batch_size,
         )
         _model_loaded = True
 
         logger.info(
             f"Transformer model loaded successfully "
-            f"(variant={settings.model_variant}, device={_extractor.device})"
+            f"(variant=roberta, device={_extractor.device})"
         )
 
     except Exception as e:
@@ -154,7 +163,7 @@ def readyz():
         return {
             "status": "ready",
             "model_loaded": True,
-            "variant": settings.model_variant,
+            "variant": "roberta",
             "device": str(_extractor.device) if _extractor else "unknown",
         }
     else:
@@ -163,7 +172,7 @@ def readyz():
             detail={
                 "status": "loading",
                 "model_loaded": False,
-                "variant": settings.model_variant,
+                "variant": "roberta",
             },
         )
 
@@ -193,7 +202,7 @@ def readyz():
     tags=["Extraction"],
     summary="Extract clinical entities from text",
     description=(
-        "Processes clinical text using RoBERTa (FIXED for experiments) "
+        "Processes clinical text using RoBERTa "
         "and returns structured medical entities with character offsets."
     ),
 )
@@ -216,12 +225,12 @@ def predict(request: NERRequest):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
-                "error": {
-                    "code": "MODEL_NOT_LOADED",
-                    "message": f"Transformer model not initialized (variant: {settings.model_variant})",
-                    "detail": "Model is still loading from Hugging Face Hub",
-                }
-            },
+                    "error": {
+                        "code": "MODEL_NOT_LOADED",
+                        "message": "Transformer model not initialized (variant: roberta)",
+                        "detail": "Model is still loading from Hugging Face Hub",
+                    }
+                },
         )
 
     # Validate input
@@ -231,7 +240,7 @@ def predict(request: NERRequest):
             entities=[],
             meta={
                 "model": "transformer",
-                "variant": settings.model_variant,
+                "variant": "roberta",
                 "count": 0,
                 "normalized": False,
             },
@@ -239,7 +248,7 @@ def predict(request: NERRequest):
 
     try:
         logger.info(
-            f"Processing extraction request (text_length={len(request.text)}, variant={settings.model_variant})"
+            f"Processing extraction request (text_length={len(request.text)}, variant=roberta)"
         )
         start_time = time.time()
 
@@ -265,7 +274,7 @@ def predict(request: NERRequest):
         # Build metadata
         meta = {
             "model": "transformer",
-            "variant": settings.model_variant,
+            "variant": "roberta",
             "count": len(entities),
             "normalized": False,  # Transformer doesn't use UMLS normalization
             "inference_time_ms": round(inference_time_ms, 2),

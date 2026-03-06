@@ -1,7 +1,7 @@
 # ==============================================================================
 # MedAI Transformer NER Service - Dockerfile
 # ==============================================================================
-# PyTorch-based image for Transformer NER service (BETO/RoBERTa).
+# PyTorch-based image for Transformer NER service (RoBERTa).
 # Downloads models from Hugging Face Hub on first startup.
 #
 # Image size: ~1.8GB (PyTorch + Transformers)
@@ -20,7 +20,7 @@ RUN pip install --upgrade pip && \
 COPY services/ner-transformer/app ./app
 
 # Shared schemas are mounted via docker-compose volumes
-# See docker-compose.micro.dev.yml: ./shared:/app/shared:ro
+# See docker-compose.dev.yml / docker-compose.prod.yml: ./shared:/app/shared:ro
 
 # Create cache directory for Hugging Face models
 RUN mkdir -p /root/.cache/huggingface

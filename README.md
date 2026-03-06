@@ -13,7 +13,7 @@ MedAI Backend is a production-grade REST API service that provides clinical Name
 
 ### Key Features
 
-- **Multiple NER Models**: Choose from BiLSTM, Transformer (RoBERTa), or LLM-based (GPT) extraction
+- **Multiple NER Models**: Choose from CRF, BiLSTM, BiLSTM-CRF, Transformer (RoBERTa), or LLM-based (GPT) extraction
 - **Microservices Architecture**: Independent services for each model with isolated dependencies
 - **Entity Normalization**: UMLS-based normalization to SNOMED-CT/ICD-10 (module available; currently disabled in gateway)
 - **Batch Processing**: Process multiple clinical notes in a single request
@@ -27,20 +27,18 @@ The backend uses a microservices architecture where each NER model runs in an in
 
 ```
                     ┌─────────────────────┐
-                    │   API Gateway       │
-                    │   Port: 8000        │
-                    │   Size: ~200MB      │
+                    │     API Gateway     │
+                    │     Port: 8000      │
+                    │     Size: ~200MB    │
                     └──────────┬──────────┘
                                │
-        ┌──────────────────────┼──────────────────────┐
-        │                      │                      │
-        ▼                      ▼                      ▼
-┌───────────────┐      ┌───────────────┐     ┌──────────────┐
-│ Transformer   │      │   BiLSTM     │     │     LLM      │
-│ Port: 8001    │      │  Port: 8002   │     │  Port: 8003  │
-│ Size: ~1.8GB  │      │  Size: ~1.2GB │     │  Size: ~100MB│
-│  RoBERTa      │      │  BiLSTM-CRF   │     │    GPT       │
-└───────────────┘      └───────────────┘     └──────────────┘
+        ┌──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐
+        ▼              ▼              ▼              ▼              ▼
+┌───────────────┐┌───────────────┐┌───────────────┐┌───────────────┐┌───────────────┐
+│ Transformer   ││    BiLSTM     ││  BiLSTM-CRF   ││      CRF      ││      LLM      │
+│ Port: 8001    ││ Port: 8002    ││ Port: 8005    ││ Port: 8004    ││ Port: 8003    │
+│ RoBERTa       ││ no CRF layer  ││ Viterbi       ││ sklearn-crfsuite ││ GPT-only      │
+└───────────────┘└───────────────┘└───────────────┘└───────────────┘└───────────────┘
 ```
 
 ### Services
@@ -48,10 +46,10 @@ The backend uses a microservices architecture where each NER model runs in an in
 | Service | Port | Description | Image Size | Startup Time |
 |---------|------|-------------|------------|--------------|
 | **Gateway** | 8000 | API REST, routing, MongoDB | ~200MB | <2s |
-| **Transformer** | 8001 | RoBERTa NER (fixed) | ~1.8GB | 5-30s |
+| **Transformer** | 8001 | RoBERTa NER (RoBERTa-only) | ~1.8GB | 5-30s |
 | **BiLSTM** | 8002 | BiLSTM NER (no CRF) | ~1.0GB | 5-10s |
 | **BiLSTM-CRF** | 8005 | BiLSTM-CRF NER | ~1.2GB | 5-10s |
-| **LLM** | 8003 | GPT NER (fixed) | ~100MB | <1s |
+| **LLM** | 8003 | GPT NER (GPT-only) | ~100MB | <1s |
 | **CRF** | 8004 | sklearn-crfsuite CRF NER | ~400MB | <2s |
 | **MongoDB** | 27017 | Database | - | <5s |
 
@@ -118,10 +116,10 @@ curl -X POST "http://localhost:8000/extract" \
 
 **Request Parameters:**
 - `text` or `file`: Clinical note text or file (PDF/DOCX/TXT)
-- `model`: Model type (`lstm`, `transformer`, or `llm`)
+- `model`: Model type (`lstm`, `lstm_crf`, `crf`, `transformer`, or `llm`)
 - `model_variant`: Model variant (optional)
-  - For `transformer`: `roberta` (fixed for experiments)
-  - For `llm`: `gpt` (fixed for experiments)
+  - For `transformer`: `roberta` (fixed)
+  - For `llm`: `gpt` (fixed)
 - `episode_id`: Episode identifier (required; API returns 400 if missing)
 - `note_date`: Clinical note date (ISO 8601, required; API returns 400 if missing)
 - `save`: Save result (default: `true`)
@@ -251,6 +249,16 @@ Configuration is managed through environment variables. Create a `.env` file bas
 | `NER_LLM_URL` | LLM service URL | http://ner-llm:8003 |
 | `NER_CRF_URL` | CRF service URL | http://ner-crf:8004 |
 
+### Transformer (RoBERTa) windowing
+
+The Transformer microservice processes long notes using sliding windows (stride) instead of truncating to 512 tokens.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TRANSFORMER_MAX_LEN` | Token window length (subword tokens) | 512 |
+| `TRANSFORMER_STRIDE` | Sliding-window overlap between windows (tokens) | 128 |
+| `TRANSFORMER_WINDOW_BATCH_SIZE` | Windows processed per forward pass | 8 |
+
 ### API Keys (optional)
 
 | Variable | Description | Required For |
@@ -293,7 +301,7 @@ curl -X POST "http://localhost:8000/extract" \
 ```
 
 ### Transformer (Recommended)
-Best accuracy for clinical NER. Fixed to RoBERTa for experiments.
+Best accuracy for clinical NER (RoBERTa).
 
 ```bash
 curl -X POST "http://localhost:8000/extract" \
@@ -304,7 +312,7 @@ curl -X POST "http://localhost:8000/extract" \
 ```
 
 ### LLM
-Highest flexibility with structured outputs. Fixed to GPT for experiments. Requires API key.
+Highest flexibility with structured outputs (GPT-only). Requires API key.
 
 ```bash
 curl -X POST "http://localhost:8000/extract" \
@@ -331,7 +339,7 @@ curl -X POST "http://localhost:8000/extract" \
   -F "episode_id=EP-001" \
   -F "note_date=2024-01-15T10:30:00"
 ```
-- All models (BiLSTM, Transformer RoBERTa, LLM GPT)
+- All models (CRF, BiLSTM, BiLSTM-CRF, Transformer RoBERTa, LLM GPT)
 - Document processing (PDF/DOCX/TXT)
 - Result retrieval
 - Deduplication
@@ -346,33 +354,24 @@ docker-compose -f docker-compose.dev.yml up --build
 
 This configuration:
 - Uses local MongoDB container
-- Enables hot reload for development
-- Exposes all service ports for debugging
+- Publishes only Gateway (`8000`) and MongoDB (`27017`) to host
+- Keeps NER services on the internal Docker network (`medai-network`)
 
 ### Production (MongoDB Atlas)
 
 ```bash
-# 1. Configure environment
-cp .env.prod .env.prod.local
-# Edit MONGODB_URI and other settings as needed
-
-# 2. Start services
+# Configure MONGODB_URI in .env.prod.
+# Requires local Cloudflare credentials in ~/.cloudflared/config.yml
+# and an existing named tunnel: medai-backend.
 docker-compose -f docker-compose.prod.yml up --build
-```
-
-### Production (Local MongoDB)
-
-```bash
-docker-compose -f docker-compose.prod.yml \
-               -f docker-compose.prod.localdb.yml up --build
 ```
 
 ### Secure Exposure with Cloudflare Tunnel
 
 ```bash
-# The tunnel only exposes the gateway (port 8000)
-# NER services remain internal
-cloudflared tunnel run medai-backend
+# Cloudflare Tunnel runs as the `cloudflared` service in prod compose
+# (gateway remains the only exposed backend endpoint)
+docker compose -f docker-compose.prod.yml logs -f cloudflared
 
 # Verify external access
 curl https://medai.your-domain.com/health
@@ -401,19 +400,18 @@ docker-compose -f docker-compose.dev.yml logs -f ner-llm
 # Gateway (liveness)
 curl http://localhost:8000/health
 
-# NER services
-curl http://localhost:8001/health   # Transformer (liveness)
-curl http://localhost:8002/health   # BiLSTM (liveness)
-curl http://localhost:8004/health   # CRF (liveness)
-curl http://localhost:8005/health   # BiLSTM-CRF (liveness)
-curl http://localhost:8003/health   # LLM (liveness)
-
-# NER services (readiness - checks if model is loaded)
-curl http://localhost:8001/readyz  # Transformer
-curl http://localhost:8002/readyz  # BiLSTM
-curl http://localhost:8004/readyz  # CRF
-curl http://localhost:8005/readyz  # BiLSTM-CRF
-curl http://localhost:8003/readyz  # LLM
+# NER services are internal (not published to host ports in compose).
+# Check readiness from inside the gateway container:
+docker-compose -f docker-compose.dev.yml exec gateway \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://ner-transformer:8001/readyz').status)"
+docker-compose -f docker-compose.dev.yml exec gateway \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://ner-bilstm:8002/readyz').status)"
+docker-compose -f docker-compose.dev.yml exec gateway \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://ner-bilstm-crf:8005/readyz').status)"
+docker-compose -f docker-compose.dev.yml exec gateway \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://ner-crf:8004/readyz').status)"
+docker-compose -f docker-compose.dev.yml exec gateway \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://ner-llm:8003/readyz').status)"
 ```
 
 ### Common Issues
@@ -495,11 +493,21 @@ medai-backend/
 │   │       ├── main.py        # FastAPI app
 │   │       ├── config.py
 │   │       └── extractor.py   # NER extraction logic
-│   ├── ner-bilstm/            # BiLSTM service (BiLSTM-CRF)
+│   ├── ner-bilstm/            # BiLSTM service (no CRF)
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   ├── app/
 │   │   └── models/            # BiLSTM model files
+│   ├── ner-bilstm-crf/        # BiLSTM-CRF service
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   ├── app/
+│   │   └── models/            # BiLSTM-CRF model files
+│   ├── ner-crf/               # CRF service (sklearn-crfsuite)
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   ├── app/
+│   │   └── models/            # CRF model files
 │   └── ner-llm/               # LLM service (GPT only)
 │       ├── Dockerfile
 │       ├── requirements.txt
@@ -561,6 +569,8 @@ This creates:
 - `openapi/gateway.json` - Gateway API (public endpoints)
 - `openapi/ner-transformer.json` - Transformer service
 - `openapi/ner-bilstm.json` - BiLSTM service
+- `openapi/ner-bilstm-crf.json` - BiLSTM-CRF service
+- `openapi/ner-crf.json` - CRF service
 - `openapi/ner-llm.json` - LLM service
 - `openapi.json` - Gateway schema (backward compatibility)
 

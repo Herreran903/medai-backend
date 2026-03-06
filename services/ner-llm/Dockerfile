@@ -2,7 +2,7 @@
 # MedAI LLM NER Service - Dockerfile
 # ==============================================================================
 # Lightweight image for LLM-based entity extraction service.
-# Uses external APIs (Claude/GPT) - no local model loading required.
+# Uses the OpenAI GPT API (no local model loading required).
 #
 # Image size: ~100MB (minimal dependencies)
 # Startup time: <1 second (API key validation only)
@@ -20,7 +20,7 @@ RUN pip install --upgrade pip && \
 COPY services/ner-llm/app ./app
 
 # Shared schemas are mounted via docker-compose volumes
-# See docker-compose.micro.dev.yml: ./shared:/app/shared:ro
+# See docker-compose.dev.yml / docker-compose.prod.yml: ./shared:/app/shared:ro
 
 # Expose service port
 EXPOSE 8003

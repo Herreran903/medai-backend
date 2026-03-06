@@ -7,19 +7,15 @@
 # Usage:
 #   docker-compose -f docker-compose.prod.yml up --build
 #
-# For local MongoDB in production (testing):
-#   docker-compose -f docker-compose.prod.yml -f docker-compose.prod.localdb.yml up
-#
 # Services:
 #   - gateway: API Gateway (FastAPI, no ML dependencies)
+#   - cloudflared: Cloudflare Tunnel exposure service
 #   - ner-transformer: Transformer NER Service (PyTorch + HuggingFace)
 #   - ner-bilstm: BiLSTM NER Service (Keras v3 + TensorFlow backend)
 #   - ner-bilstm-crf: BiLSTM-CRF NER Service (TensorFlow)
 #   - ner-crf: CRF NER Service (sklearn-crfsuite)
-#   - ner-llm: LLM NER Service (Anthropic/OpenAI clients)
-#   - mongo: MongoDB database (disabled by default, enable with override)
-
-version: "3.8"
+#   - ner-llm: LLM NER Service (GPT-only; OpenAI client)
+#   - MongoDB: External database (configure via MONGODB_URI in .env.prod)
 
 services:
   # ===========================================================================
@@ -55,7 +51,31 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
-  # NER Transformer Service (RoBERTa ONLY - Fixed for experiments)
+  # Cloudflare Tunnel (Gateway Exposure)
+  # ===========================================================================
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: medai-cloudflared-prod
+    # Uses host Cloudflare credentials (~/.cloudflared) and named tunnel.
+    # The host config usually targets localhost:8000; inside Docker that
+    # must route to the gateway service name.
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      set -eu;
+      test -f /etc/cloudflared/config.yml;
+      sed -E 's#credentials-file:[[:space:]]*(.*/)?([^/[:space:]]+\.json)[[:space:]]*$#credentials-file: /etc/cloudflared/\2#' /etc/cloudflared/config.yml |
+      sed -E 's#service:[[:space:]]*http://localhost:8000#service: http://gateway:8000#' > /tmp/config.yml;
+      exec cloudflared tunnel --no-autoupdate --config /tmp/config.yml run medai-backend
+    depends_on:
+      - gateway
+    volumes:
+      - ${HOME}/.cloudflared:/etc/cloudflared:ro
+    networks:
+      - medai-network
+    restart: unless-stopped
+
+  # ===========================================================================
+  # NER Transformer Service (RoBERTa-only)
   # ===========================================================================
   ner-transformer:
     build:
@@ -65,7 +85,6 @@ services:
     env_file:
       - .env.prod
     environment:
-      - MODEL_VARIANT=roberta
       - LOG_LEVEL=warning
     volumes:
       # Cache Hugging Face models to avoid re-downloading
@@ -141,7 +160,7 @@ services:
     # No published ports - internal network only
 
   # ===========================================================================
-  # NER LLM Service (GPT ONLY - Fixed for experiments)
+  # NER LLM Service (GPT-only)
   # ===========================================================================
   ner-llm:
     build:
@@ -151,7 +170,6 @@ services:
     env_file:
       - .env.prod
     environment:
-      - LLM_PROVIDER=gpt
       - LOG_LEVEL=warning
     volumes:
       # Mount shared schemas
@@ -160,12 +178,6 @@ services:
       - medai-network
     restart: unless-stopped
     # No published ports - internal network only
-
-  # ===========================================================================
-  # MongoDB Database (DISABLED by default - use Atlas)
-  # ===========================================================================
-  # To enable local MongoDB, use docker-compose.prod.localdb.yml override:
-  #   docker-compose -f docker-compose.prod.yml -f docker-compose.prod.localdb.yml up
 
 # =============================================================================
 # Networks

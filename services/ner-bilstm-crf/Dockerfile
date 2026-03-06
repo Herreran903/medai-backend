@@ -31,7 +31,7 @@ COPY services/ner-bilstm-crf/mwrapper.py ./
 COPY services/ner-bilstm-crf/models ./models
 
 # Shared schemas are mounted via docker-compose volumes
-# See docker-compose.micro.dev.yml: ./shared:/app/shared:ro
+# See docker-compose.dev.yml / docker-compose.prod.yml: ./shared:/app/shared:ro
 
 # Expose service port
 EXPOSE 8005

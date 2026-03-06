@@ -30,8 +30,8 @@ Supported Models:
     - ``lstm``: BiLSTM model (no CRF layer)
     - ``lstm_crf``: BiLSTM-CRF model (Viterbi decoding)
     - ``crf``: CRF model (sklearn-crfsuite)
-    - ``transformer``: Fine-tuned RoBERTa (FIXED: only roberta)
-    - ``llm``: LLM-based extraction (FIXED: only gpt)
+    - ``transformer``: Fine-tuned RoBERTa (RoBERTa-only)
+    - ``llm``: LLM-based extraction (GPT-only)
 
 Integration Points:
     - :mod:`app.services.extraction_service`: Business logic orchestration
@@ -112,8 +112,8 @@ and laboratory values. Results are persisted to MongoDB for later retrieval.
 - `lstm`: Fast inference (no CRF)
 - `lstm_crf`: BiLSTM-CRF (Viterbi decoding)
 - `crf`: Lightweight CRF (sklearn-crfsuite)
-- `transformer`: Best accuracy (FIXED: `roberta` only)
-- `llm`: Highest flexibility (FIXED: `gpt` only)
+- `transformer`: Best accuracy (RoBERTa-only)
+- `llm`: Highest flexibility (GPT-only)
 
 **Normalization:**
 Normalization is currently disabled in the gateway; the `normalize` flag is
@@ -136,7 +136,7 @@ async def extract(
     ),
     model_variant: Optional[str] = Form(
         None,
-        description="Model variant: `roberta` for transformer (fixed), `gpt` for llm (fixed).",
+        description="Model variant (currently fixed): `roberta` for transformer, `gpt` for llm.",
     ),
     episode_id: str = Form(
         ...,
@@ -178,7 +178,7 @@ async def extract(
     Args:
         text: Raw clinical note text.
         file: Uploaded file (PDF, DOCX, TXT).
-        model: Extraction model (lstm, transformer, llm).
+        model: Extraction model (lstm, lstm_crf, crf, transformer, llm).
         model_variant: Model variant for transformer/llm.
         episode_id: Clinical episode identifier (required).
         note_date: Note date in ISO 8601 format (required).

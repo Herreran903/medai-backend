@@ -1,2 +1,1 @@
-"""MedAI CRF NER microservice package."""
-
+"""CRF NER service package."""

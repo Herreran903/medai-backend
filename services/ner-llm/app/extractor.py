@@ -2,8 +2,8 @@
 LLM-Based Clinical Entity Extraction Module.
 
 This module implements clinical Named Entity Recognition (NER) using Large Language
-Models (LLMs) with structured output capabilities. It includes GPT (OpenAI) as the
-active provider and retains a Claude (Anthropic) extractor as legacy code.
+Models (LLMs) with structured output capabilities. It uses OpenAI GPT as the
+active provider.
 
 Architecture Context:
     The LLM extractor serves as an alternative to traditional NER models (LSTM,
@@ -13,15 +13,11 @@ Architecture Context:
 
     The module follows the Strategy pattern with a Facade:
 
-    - :class:`ClaudeLLMExtractor`: Anthropic Claude implementation (legacy)
     - :class:`GPTLLMExtractor`: OpenAI GPT implementation (active)
-    - :class:`LocalLLMExtractor`: Stub for future local model support
-    - :class:`LLMExtractor`: Facade fixed to GPT for experiments
+    - :class:`LLMExtractor`: Facade (GPT-only)
 
 Supported Providers:
-    - **GPT** (active/fixed): Uses GPT with structured outputs (JSON schema mode)
-    - **Claude** (legacy): Claude Sonnet support retained but disabled in experiments
-    - **Local**: Placeholder for Ollama/local model integration
+    - **GPT** (active): Uses GPT with structured outputs (JSON schema mode)
 
 Entity Categories:
     The LLM is prompted to extract entities in these clinical categories:
@@ -57,7 +53,6 @@ Configuration:
     API keys are read from environment variables:
 
     - ``OPENAI_API_KEY``: Required for GPT provider (active)
-    - ``ANTHROPIC_API_KEY``: Legacy (Claude extractor retained but disabled in experiments)
 
 See Also:
     - :mod:`app.services.pipeline` for extraction orchestration
@@ -337,226 +332,10 @@ The prompt instructs the LLM to:
 1. Extract only explicitly mentioned entities
 2. Preserve raw text values
 3. Normalize values to standard formats
-4. Assign confidence scores
-5. Return structured JSON output
+4. Return structured JSON output
 
 The ``{text}`` placeholder is replaced with the input clinical note.
 """
-
-
-# ==============================================================================
-# Claude LLM Extractor (NOT USED - Only using GPT for experiments)
-# ==============================================================================
-
-
-class ClaudeLLMExtractor:
-    """
-    Clinical entity extractor using Anthropic Claude.
-
-    NOTE: This extractor is NOT USED in current experimental setup.
-    Only GPT is used for experiments. This class is kept for reference.
-
-    This extractor uses Claude Sonnet 4.5 with a system prompt that enforces
-    JSON output conforming to the :class:`ClinicalEntitiesResponse` schema.
-
-    Architecture:
-        Claude does not natively support JSON schema mode in the same way as
-        OpenAI, so this implementation uses a detailed system prompt with
-        the JSON schema embedded to guide output format.
-
-    Attributes:
-        api_key: Anthropic API key for authentication.
-        model: Claude model identifier (default: claude-sonnet-4-20250514).
-        client: Anthropic client instance (lazy-initialized).
-
-    Example:
-        >>> extractor = ClaudeLLMExtractor()
-        >>> entities = extractor.predict("FiO2 60%, PEEP 8 cmH2O")
-        >>> print(entities[0]["type"])
-        'FIO2'
-
-    Note:
-        Requires the ``anthropic`` package and valid API key.
-    """
-
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        model: str = "claude-sonnet-4-20250514",
-    ) -> None:
-        """
-        Initialize the Claude extractor.
-
-        Args:
-            api_key: Anthropic API key. If not provided, reads from
-                ``ANTHROPIC_API_KEY`` environment variable.
-            model: Claude model identifier. Defaults to Claude Sonnet 4.5.
-
-        Raises:
-            Warning logged if API key is not configured.
-        """
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        self.model = model
-        self.client = None
-
-        if self.api_key:
-            try:
-                import anthropic
-
-                self.client = anthropic.Anthropic(api_key=self.api_key)
-                logger.info(
-                    "Claude LLM Extractor initialized with model: %s", self.model
-                )
-            except ImportError:
-                logger.warning(
-                    "anthropic package not installed. Install with: pip install anthropic"
-                )
-            except Exception as e:
-                logger.error("Error initializing Anthropic client: %s", e)
-        else:
-            logger.warning(
-                "ANTHROPIC_API_KEY not configured. Extractor will not function."
-            )
-
-    def _calculate_offsets(self, text: str, entity_text: str) -> tuple[int, int]:
-        """
-        Calculate character offsets for an entity in the source text.
-
-        Performs exact match first, then falls back to case-insensitive
-        regex search if exact match fails.
-
-        Args:
-            text: Complete source text.
-            entity_text: Entity text span to locate.
-
-        Returns:
-            Tuple of (start, end) character positions, or (-1, -1) if not found.
-        """
-        start = text.find(entity_text)
-        if start == -1:
-            pattern = re.escape(entity_text)
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                start = match.start()
-                end = match.end()
-            else:
-                return (-1, -1)
-        else:
-            end = start + len(entity_text)
-
-        return (start, end)
-
-    def predict(self, text: str) -> List[Dict[str, Any]]:
-        """
-        Extract clinical entities from text using Claude.
-
-        Args:
-            text: Clinical note text to process.
-
-        Returns:
-            List of entity dictionaries compatible with the pipeline format::
-
-                [
-                    {
-                        "type": str,      # Entity label
-                        "text": str,      # Raw text span
-                        "start": int,     # Character offset start
-                        "end": int,       # Character offset end
-                        "code": str       # Normalized value
-                    }
-                ]
-
-        Note:
-            Returns empty list if client is not initialized or on error.
-        """
-        if not self.client:
-            logger.error("Claude client not initialized. Returning empty list.")
-            return []
-
-        if not text or not text.strip():
-            return []
-
-        try:
-            prompt = EXTRACTION_PROMPT.format(text=text)
-            schema = ClinicalEntitiesResponse.model_json_schema()
-            response = None
-            content = None
-
-            # Use system prompt with JSON schema (Claude SDK doesn't support response_format)
-            try:
-                system_msg = (
-                    "Return exclusively valid JSON that strictly conforms to this Pydantic JSON Schema. "
-                    "Do not include ANY text outside the JSON:\n" + json.dumps(schema)
-                )
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=4096,
-                    temperature=0.0,
-                    system=system_msg,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                content = response.content[0].text
-            except Exception as e:
-                logger.error("Error calling Claude API: %s", e)
-                return []
-
-            # Validate response against schema
-            try:
-                entities_response = ClinicalEntitiesResponse.model_validate_json(
-                    content
-                )
-            except Exception:
-                try:
-                    # Attempt to extract JSON from response text
-                    m = re.search(r"\{.*\}|\[.*\]", content, re.DOTALL)
-                    if not m:
-                        raise ValueError("No JSON found in model output")
-                    raw_json = m.group(0)
-                    if raw_json.lstrip().startswith("["):
-                        wrapped = json.dumps({"entities": json.loads(raw_json)})
-                        entities_response = (
-                            ClinicalEntitiesResponse.model_validate_json(wrapped)
-                        )
-                    else:
-                        entities_response = (
-                            ClinicalEntitiesResponse.model_validate_json(raw_json)
-                        )
-                except Exception as e2:
-                    logger.error("Error validating Claude JSON output: %s", e2)
-                    return []
-
-            # Convert to pipeline-compatible format
-            result = []
-            for entity in entities_response.entities:
-                start, end = self._calculate_offsets(text, entity.value_raw)
-
-                entity_dict = {
-                    "type": entity.label,
-                    "text": entity.value_raw,
-                    "start": start if start >= 0 else None,
-                    "end": end if end >= 0 else None,
-                    "code": entity.value_norm,
-                }
-                result.append(entity_dict)
-
-            logger.info("Extracted %d clinical entities with Claude", len(result))
-            return result
-
-        except Exception as e:
-            logger.error("Error in Claude extraction: %s", e)
-            return []
-
-    def meta(self) -> Dict[str, Any]:
-        """
-        Return extractor metadata for logging and debugging.
-
-        Returns:
-            Dictionary containing extractor configuration and capabilities.
-        """
-        return {
-            "model": self.model,
-            "provider": "anthropic",
-        }
 
 
 # ==============================================================================
@@ -568,17 +347,16 @@ class GPTLLMExtractor:
     """
     Clinical entity extractor using OpenAI GPT.
 
-    This extractor uses GPT-4o with native structured outputs (JSON schema mode)
-    for guaranteed valid JSON responses.
+    Uses OpenAI Chat Completions with structured outputs (JSON schema mode) to
+    return valid JSON that matches :class:`ClinicalEntitiesResponse`.
 
     Architecture:
-        GPT-4o supports ``response_format`` with JSON schema validation,
-        ensuring the output always conforms to the expected structure.
-        This provides more reliable parsing than prompt-based approaches.
+        Uses ``response_format={"type": "json_schema", ...}`` in strict mode
+        when available, and falls back to prompt-based JSON parsing if needed.
 
     Attributes:
         api_key: OpenAI API key for authentication.
-        model: GPT model identifier (default: gpt-4o-2024-08-06).
+        model: GPT model identifier (default: gpt-5.2).
         client: OpenAI client instance (lazy-initialized).
 
     Example:
@@ -594,20 +372,20 @@ class GPTLLMExtractor:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-5.2",  # Fixed: GPT-5.2 with temperature 0
+        model: str = "gpt-5.2",  # Default: GPT-5.2 (temperature is fixed to 0)
     ) -> None:
         """
-        Initialize the GPT extractor with fixed configuration for experiments.
+        Initialize the GPT extractor with deterministic configuration.
 
         Configuration:
-            - Model: gpt-5.2
+            - Model: gpt-5.2 (default)
             - Temperature: 0.0 (deterministic outputs)
-            - System Prompt: Experimental NER extraction instructions
+            - System Prompt: Clinical NER extraction instructions
 
         Args:
             api_key: OpenAI API key. If not provided, reads from
                 ``OPENAI_API_KEY`` environment variable.
-            model: GPT model identifier. Defaults to gpt-5.2 (fixed for experiments).
+            model: GPT model identifier. Defaults to gpt-5.2.
 
         Raises:
             Warning logged if API key is not configured.
@@ -711,7 +489,7 @@ class GPTLLMExtractor:
 
             fix_schema_for_openai(openai_schema)
 
-            # Use structured outputs with experimental system prompt
+            # Use structured outputs (JSON schema mode)
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
@@ -810,77 +588,6 @@ class GPTLLMExtractor:
 
 
 # ==============================================================================
-# Local LLM Extractor (NOT USED - Only using GPT for experiments)
-# ==============================================================================
-
-
-class LocalLLMExtractor:
-    """
-    Stub extractor for local LLM models (e.g., Llama, Mistral via Ollama).
-
-    NOTE: This extractor is NOT USED in current experimental setup.
-    Only GPT is used for experiments. This class is kept for reference.
-
-    This class provides a placeholder for future local model integration,
-    allowing the system to be extended without API dependencies.
-
-    Attributes:
-        model: Local model identifier.
-        base_url: Ollama or compatible server URL.
-
-    Note:
-        This is a stub implementation. The :meth:`predict` method returns
-        an empty list until full implementation is completed.
-    """
-
-    def __init__(
-        self,
-        model: str = "llama3.1:8b",
-        base_url: str = "http://localhost:11434",
-    ) -> None:
-        """
-        Initialize the local LLM extractor stub.
-
-        Args:
-            model: Local model name (e.g., "llama3.1:8b").
-            base_url: Ollama server URL.
-        """
-        self.model = model
-        self.base_url = base_url
-
-        logger.info("Local LLM Extractor (STUB) initialized with model: %s", self.model)
-        logger.warning("Local LLM extractor is a stub. Implementation pending.")
-
-    def predict(self, text: str) -> List[Dict[str, Any]]:
-        """
-        Stub prediction method.
-
-        Args:
-            text: Clinical note text (unused in stub).
-
-        Returns:
-            Empty list (implementation pending).
-        """
-        logger.warning("Local LLM extractor not implemented. Returning empty list.")
-        return []
-
-    def meta(self) -> Dict[str, Any]:
-        """
-        Return extractor metadata.
-
-        Returns:
-            Dictionary indicating stub status.
-        """
-        return {
-            "extractor": "local_llm",
-            "model": self.model,
-            "provider": "local",
-            "base_url": self.base_url,
-            "status": "stub",
-        }
-
-
-# ==============================================================================
 # LLM Extractor Facade
 # ==============================================================================
 
@@ -889,16 +596,15 @@ class LLMExtractor:
     """
     Facade class for LLM-based clinical entity extraction.
 
-    SIMPLIFIED FOR EXPERIMENTS: This facade now ONLY uses GPT-5.2 with fixed configuration.
-    Claude and Local providers are disabled.
+    This facade runs GPT-only.
 
     Configuration:
         - Provider: GPT (forced)
-        - Model: gpt-5.2 (fixed)
+        - Model: gpt-5.2 (default)
         - Temperature: 0.0 (deterministic)
 
     Attributes:
-        provider: Always "gpt" (fixed for experiments).
+        provider: Always "gpt" (fixed).
         extractor: GPTLLMExtractor instance.
 
     Example:
@@ -911,36 +617,31 @@ class LLMExtractor:
 
     def __init__(
         self,
-        provider: str = "gpt",
-        api_key: Optional[str] = None,
-        model: Optional[str] = None,
-        **kwargs,
+        api_key: str,
+        model: str = "gpt-5.2",
     ) -> None:
         """
-        Initialize the LLM extractor (GPT only, fixed for experiments).
+        Initialize the LLM extractor (GPT-only).
 
         Args:
-            provider: Ignored - always uses "gpt".
             api_key: OpenAI API key. Required.
             model: Model identifier (defaults to gpt-5.2).
-            **kwargs: Ignored.
 
         Raises:
             ValueError: If OpenAI API key is not provided.
         """
-        # Force GPT provider regardless of input
         self.provider = "gpt"
 
         if not api_key:
             raise ValueError("OpenAI API key required for GPT extractor")
 
-        # Always use GPT with fixed configuration
+        # Always use GPT with deterministic configuration
         self.extractor = GPTLLMExtractor(
             api_key=api_key,
-            model=model or "gpt-5.2",
+            model=model,
         )
 
-        logger.info("LLMExtractor initialized with provider: gpt (model: %s)", model or "gpt-5.2")
+        logger.info("LLMExtractor initialized with provider: gpt (model: %s)", model)
 
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """

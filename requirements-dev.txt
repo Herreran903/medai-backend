@@ -1,5 +1,0 @@
--r requirements.txt
-black
-isort
-ruff
-pre-commit

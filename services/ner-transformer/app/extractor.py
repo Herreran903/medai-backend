@@ -1,62 +1,30 @@
 """
-Transformer-Based Named Entity Recognition for Clinical Text.
+Transformer Named Entity Recognition Model for Clinical Text.
 
-This module implements clinical NER using fine-tuned Spanish Transformer models
-with BIO tagging for mechanical ventilation notes.
+This module implements Transformer-based NER for Spanish clinical notes using a
+fine-tuned RoBERTa token-classification model (Hugging Face Transformers) with
+BIO tagging.
 
-FIXED FOR EXPERIMENTS: Only using RoBERTa variant. BETO classes are kept as
-backup but are NOT loaded or used.
+Windowing Strategy:
+    Long notes are processed with sliding windows: the tokenizer splits the
+    input into overlapping windows (``max_len`` with ``stride`` overlap),
+    predictions are merged back at word level, and BIO tags are decoded into
+    entity spans with character offsets.
 
-Architecture Context:
-    The Transformer extractor is the primary NER model in MedAI, offering
-    the best balance of accuracy and performance for clinical entity extraction.
+Model Details:
+    - Base: PlanTL-GOB-ES/roberta-base-bne
+    - Fine-tuned: NicolasUnivalle/roberta-vm-ner-full
 
-    Active model:
-
-    - **RoBERTa**: Spanish RoBERTa model fine-tuned on mechanical ventilation notes (ACTIVE)
-    - **BETO**: NOT USED - Kept as backup only
-
-    The active model is hosted on Hugging Face and loaded via the Transformers library.
-
-Model Architecture:
-    The extractor uses Hugging Face ``AutoModelForTokenClassification`` with:
-
-    - Pre-trained Spanish RoBERTa language model
-    - Token classification head for BIO tag prediction
-    - Subword tokenization with offset mapping for span reconstruction
-
-Decoding Strategy:
-    The implementation follows a "first subtoken wins" strategy aligned with
-    the training notebook:
-
-    1. Tokenize with subword offsets (no sliding windows)
-    2. Predict BIO tags per subtoken
-    3. Reconstruct word-level tags using first subtoken
-    4. Decode BIO sequences to entity spans
-
-Design Pattern:
-    The module follows the Strategy pattern with a Facade:
-
-    - :class:`BaseTransformerExtractor`: Core extraction logic
-    - :class:`BETOTransformerExtractor`: BETO-specific configuration (NOT USED)
-    - :class:`RobertaTransformerExtractor`: RoBERTa-specific configuration (ACTIVE)
-    - :class:`TransformerExtractor`: Facade (fixed to RoBERTa)
-
-Model Configuration:
-    Model is configured via environment variables or :class:`app.config.Settings`:
-
-    - ``TRANSFORMER_ROBERTA_MODEL_ID``: Hugging Face ID for RoBERTa model (ACTIVE)
-    - ``TRANSFORMER_BETO_MODEL_ID``: NOT USED
+Configuration:
+    - ``TRANSFORMER_ROBERTA_MODEL_ID`` (default: NicolasUnivalle/roberta-vm-ner-full)
+    - ``TRANSFORMER_MAX_LEN`` (default: 512)
+    - ``TRANSFORMER_STRIDE`` (default: 128)
+    - ``TRANSFORMER_WINDOW_BATCH_SIZE`` (default: 8)
 
 Usage:
     >>> from app.extractor import TransformerExtractor
     >>> extractor = TransformerExtractor()
-    >>> entities = extractor.predict("Paciente con FiO2 60%, PEEP 8 cmH2O")
-
-See Also:
-    - :mod:`app.services.pipeline` for extraction orchestration
-    - :mod:`app.services.registry` for model registration
-    - :class:`app.schemas.Entity` for output schema
+    >>> extractor.predict("Paciente con FiO2 60%, PEEP 8 cmH2O")
 """
 
 from __future__ import annotations
@@ -75,7 +43,6 @@ from transformers import (
 
 # Logger configuration
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARNING)
 
 
 # ==============================================================================
@@ -89,7 +56,7 @@ class BaseTransformerExtractor:
 
     Implements the core extraction pipeline aligned with the training notebook:
 
-    1. Tokenize with offset mapping (no sliding windows)
+    1. Tokenize with offset mapping (sliding windows with stride for long texts)
     2. Predict BIO tags per subtoken
     3. Reconstruct word-level predictions ("first subtoken wins")
     4. Decode BIO sequences to entity spans
@@ -99,7 +66,9 @@ class BaseTransformerExtractor:
 
     Attributes:
         model_id: Hugging Face model identifier or local path.
-        MAX_LEN: Maximum sequence length for tokenization.
+        MAX_LEN: Token window length for tokenization (subword tokens).
+        STRIDE: Sliding-window overlap (subword tokens).
+        WINDOW_BATCH_SIZE: Number of windows per forward pass.
         device: PyTorch device (cuda or cpu).
         tokenizer: Hugging Face tokenizer instance.
         model: Loaded classification model.
@@ -115,6 +84,8 @@ class BaseTransformerExtractor:
         model_id: str,
         *,
         max_len: int = 512,
+        stride: int = 128,
+        window_batch_size: int = 8,
         device: Optional[str] = None,
     ) -> None:
         """
@@ -123,13 +94,18 @@ class BaseTransformerExtractor:
         Args:
             model_id: Hugging Face model identifier (e.g., "NicolasUnivalle/roberta-vm-ner-full")
                 or path to local model directory.
-            max_len: Maximum sequence length for tokenization. Longer sequences
-                are truncated.
+            max_len: Token window length (subword tokens). Long notes are
+                processed with sliding windows instead of being truncated to
+                this length.
+            stride: Sliding-window overlap (subword tokens) for long notes.
+            window_batch_size: Number of windows processed per forward pass.
+                Lower values reduce peak memory usage for very long notes.
             device: PyTorch device string ("cuda", "cpu"). If None, automatically
                 selects CUDA if available.
 
         Raises:
-            ValueError: If the model does not expose ``config.id2label`` mapping.
+            ValueError: If parameters are invalid or the model does not expose
+                ``config.id2label`` mapping.
 
         Note:
             Model download from Hugging Face Hub occurs on first instantiation
@@ -137,6 +113,17 @@ class BaseTransformerExtractor:
         """
         self.model_id: str = model_id
         self.MAX_LEN = int(max_len)
+        self.STRIDE = int(stride)
+        self.WINDOW_BATCH_SIZE = int(window_batch_size)
+
+        if self.MAX_LEN <= 0:
+            raise ValueError("max_len must be > 0")
+        if self.STRIDE < 0:
+            raise ValueError("stride must be >= 0")
+        if self.STRIDE >= self.MAX_LEN:
+            raise ValueError("stride must be < max_len")
+        if self.WINDOW_BATCH_SIZE <= 0:
+            raise ValueError("window_batch_size must be > 0")
 
         # Device selection with CUDA fallback
         self.device = (
@@ -198,70 +185,98 @@ class BaseTransformerExtractor:
         if not text:
             return []
 
-        # Tokenize with offset mapping (no sliding windows)
+        # Tokenize with offset mapping using sliding windows for long texts.
         enc = self.tokenizer(
             text,
             return_offsets_mapping=True,
             truncation=True,
             max_length=self.MAX_LEN,
+            stride=self.STRIDE,
+            return_overflowing_tokens=True,
+            padding=True,
             return_tensors="pt",
         )
 
         input_ids = enc["input_ids"].to(self.device)
         attention_mask = enc["attention_mask"].to(self.device)
 
-        # Offset mapping for span reconstruction
-        offsets = enc["offset_mapping"][0].tolist()
-
-        # Word IDs for subtoken-to-word mapping
-        word_ids = enc.word_ids(batch_index=0)
-
-        # Model inference
+        # Model inference (batched over windows)
+        preds_batch: List[List[int]] = []
         with torch.no_grad():
-            logits = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-            ).logits
+            num_windows = int(input_ids.shape[0])
+            for start in range(0, num_windows, self.WINDOW_BATCH_SIZE):
+                end = start + self.WINDOW_BATCH_SIZE
+                logits = self.model(
+                    input_ids=input_ids[start:end],
+                    attention_mask=attention_mask[start:end],
+                ).logits
+                preds_batch.extend(logits.argmax(dim=-1).tolist())
+        offsets_batch_raw = enc["offset_mapping"]
+        offsets_batch = (
+            offsets_batch_raw.tolist()
+            if hasattr(offsets_batch_raw, "tolist")
+            else offsets_batch_raw
+        )
 
-        preds = logits.argmax(dim=-1)[0].tolist()
-        tags = [self.id2label.get(int(p), "O") for p in preds]
+        # Merge word-level tags across windows by selecting the most "central"
+        # prediction for each word span (character offsets).
+        #
+        # This reduces boundary artifacts from chunking and enables global BIO decoding.
+        best_word_tag: Dict[tuple[int, int], tuple[str, int]] = {}
 
-        # Word-level reconstruction (first subtoken wins)
-        words = []
-        current = None
+        for win_idx, preds in enumerate(preds_batch):
+            tags = [self.id2label.get(int(p), "O") for p in preds]
+            offsets = offsets_batch[win_idx]
+            word_ids = enc.word_ids(batch_index=win_idx)
 
-        for i, w_id in enumerate(word_ids):
-            if w_id is None:
-                continue  # Skip CLS/SEP/PAD tokens
+            words = []
+            current = None
 
-            s, e = offsets[i]
-            if s == e:
-                continue  # Skip empty/special tokens
+            for tok_i, w_id in enumerate(word_ids):
+                if w_id is None:
+                    continue  # Skip special/pad tokens
 
-            tag = tags[i]
+                s, e = offsets[tok_i]
+                if s == e:
+                    continue  # Skip empty offsets
 
-            # New word_id starts a new word
-            if current is None or w_id != current["word_id"]:
-                if current:
-                    words.append(current)
-                current = {
-                    "word_id": w_id,
-                    "start": s,
-                    "end": e,
-                    "tag": tag,
-                }
-            else:
-                # Same word_id: extend character range
-                current["end"] = max(current["end"], e)
+                tag = tags[tok_i]
 
-        if current:
-            words.append(current)
+                if current is None or w_id != current["word_id"]:
+                    if current:
+                        words.append(current)
+                    current = {
+                        "word_id": w_id,
+                        "start": int(s),
+                        "end": int(e),
+                        "tag": tag,
+                        "tok_i": tok_i,
+                    }
+                else:
+                    current["end"] = max(current["end"], int(e))
+
+            if current:
+                words.append(current)
+
+            for w in words:
+                key = (w["start"], w["end"])
+                # Higher is better: farther from window edges.
+                score = min(int(w["tok_i"]), (self.MAX_LEN - 1) - int(w["tok_i"]))
+                prev = best_word_tag.get(key)
+                if prev is None or score > prev[1]:
+                    best_word_tag[key] = (str(w["tag"]), score)
+
+        merged_words = [
+            {"start": s, "end": e, "tag": tag}
+            for (s, e), (tag, _score) in best_word_tag.items()
+        ]
+        merged_words.sort(key=lambda w: (w["start"], w["end"]))
 
         # BIO decoding (notebook-aligned)
         spans = []
         cur_start, cur_end, cur_label = None, None, None
 
-        for w in words:
+        for w in merged_words:
             tag = w["tag"]
 
             if tag.startswith("B-"):
@@ -308,7 +323,9 @@ class BaseTransformerExtractor:
 
             - ``model_id``: Hugging Face model identifier
             - ``num_labels``: Number of BIO tags
-            - ``max_len``: Maximum sequence length
+            - ``max_len``: Token window length (subword tokens)
+            - ``stride``: Sliding-window overlap (subword tokens)
+            - ``window_batch_size``: Windows per forward pass
             - ``device``: Inference device (cuda/cpu)
             - ``labels``: List of unique BIO tags
             - ``decoder``: Decoding strategy description
@@ -317,78 +334,12 @@ class BaseTransformerExtractor:
             "model_id": self.model_id,
             "num_labels": len(self.id2label),
             "max_len": self.MAX_LEN,
+            "stride": self.STRIDE,
+            "window_batch_size": self.WINDOW_BATCH_SIZE,
             "device": str(self.device),
             "labels": sorted(set(self.id2label.values())),
-            "decoder": "BIO-first-subtoken (notebook-aligned)",
+            "decoder": "BIO-first-subtoken + sliding-window merge (notebook-aligned)",
         }
-
-
-# ==============================================================================
-# BETO Transformer Extractor
-# ==============================================================================
-
-
-class BETOTransformerExtractor(BaseTransformerExtractor):
-    """
-    NOT USED - Only using RoBERTa for experiments. Kept as backup.
-
-    BETO (Bidirectional Encoder Representations from Transformers for Spanish)
-    is a Spanish BERT model. This extractor uses a version fine-tuned on
-    mechanical ventilation clinical notes.
-
-    Model Details:
-        - Base: dccuchile/bert-base-spanish-wwm-cased
-        - Fine-tuning: NER on mechanical ventilation notes
-        - Hugging Face: NicolasUnivalle/beto-vm-ner-full
-
-    Attributes:
-        Inherits all attributes from :class:`BaseTransformerExtractor`.
-
-    See Also:
-        - :class:`RobertaTransformerExtractor` for the active RoBERTa variant
-        - :class:`TransformerExtractor` for facade (fixed to RoBERTa)
-    """
-
-    def __init__(
-        self,
-        model_id: Optional[str] = None,
-        *,
-        max_len: int = 512,
-        device: Optional[str] = None,
-    ) -> None:
-        """
-        Initialize the BETO extractor.
-
-        Args:
-            model_id: Hugging Face model ID. Defaults to environment variable
-                ``TRANSFORMER_BETO_MODEL_ID`` or "NicolasUnivalle/beto-vm-ner-full".
-            max_len: Maximum sequence length.
-            device: PyTorch device string.
-        """
-        model_id = model_id or os.getenv(
-            "TRANSFORMER_BETO_MODEL_ID",
-            "NicolasUnivalle/beto-vm-ner-full",
-        )
-
-        super().__init__(
-            model_id=model_id,
-            max_len=max_len,
-            device=device,
-        )
-
-        logger.info("BETO Transformer Extractor initialized: %s", model_id)
-
-    def meta(self) -> Dict[str, Any]:
-        """
-        Return BETO-specific metadata.
-
-        Returns:
-            Base metadata extended with variant information.
-        """
-        base_meta = super().meta()
-        base_meta["variant"] = "beto"
-        base_meta["extractor"] = "beto_transformer"
-        return base_meta
 
 
 # ==============================================================================
@@ -418,8 +369,7 @@ class RobertaTransformerExtractor(BaseTransformerExtractor):
         'TEMP'
 
     See Also:
-        - :class:`BETOTransformerExtractor` for BETO variant
-        - :class:`TransformerExtractor` for automatic variant selection
+        - :class:`TransformerExtractor` for the service-facing extractor API
     """
 
     def __init__(
@@ -427,6 +377,8 @@ class RobertaTransformerExtractor(BaseTransformerExtractor):
         model_id: Optional[str] = None,
         *,
         max_len: int = 512,
+        stride: int = 128,
+        window_batch_size: int = 8,
         device: Optional[str] = None,
     ) -> None:
         """
@@ -435,7 +387,9 @@ class RobertaTransformerExtractor(BaseTransformerExtractor):
         Args:
             model_id: Hugging Face model ID. Defaults to environment variable
                 ``TRANSFORMER_ROBERTA_MODEL_ID`` or "NicolasUnivalle/roberta-vm-ner-full".
-            max_len: Maximum sequence length.
+            max_len: Token window length (subword tokens).
+            stride: Sliding-window overlap (subword tokens) for long notes.
+            window_batch_size: Number of windows processed per forward pass.
             device: PyTorch device string.
         """
         model_id = model_id or os.getenv(
@@ -446,6 +400,8 @@ class RobertaTransformerExtractor(BaseTransformerExtractor):
         super().__init__(
             model_id=model_id,
             max_len=max_len,
+            stride=stride,
+            window_batch_size=window_batch_size,
             device=device,
         )
 
@@ -472,18 +428,17 @@ class RobertaTransformerExtractor(BaseTransformerExtractor):
 
 class TransformerExtractor:
     """
-    Facade class for Transformer-based clinical NER extraction.
+    Service-facing Transformer extractor (RoBERTa).
 
-    FIXED FOR EXPERIMENTS: Always uses RoBERTa. BETO is disabled.
-
-    This class provides a unified interface for Transformer extraction,
-    fixed to RoBERTa for all experiment runs.
+    This wrapper provides a stable ``predict()`` API and delegates to the
+    underlying RoBERTa extractor configured with sliding-window tokenization.
 
     Attributes:
         model_id: Resolved Hugging Face model identifier.
-        max_len: Maximum sequence length.
-        device: PyTorch device string.
-        variant: Fixed to "roberta".
+        max_len: Token window length (subword tokens).
+        stride: Sliding-window overlap (subword tokens).
+        window_batch_size: Number of windows per forward pass.
+        device: PyTorch device string ("cuda", "cpu", or None for auto-detect).
         extractor: Underlying RobertaTransformerExtractor instance.
 
     Example:
@@ -500,37 +455,42 @@ class TransformerExtractor:
         model_id: Optional[str] = None,
         *,
         max_len: int = 512,
+        stride: int = 128,
+        window_batch_size: int = 8,
         device: Optional[str] = None,
     ) -> None:
         """
-        Initialize the Transformer extractor facade (fixed to RoBERTa).
+        Initialize the Transformer extractor (RoBERTa).
 
         Args:
             model_id: Hugging Face model ID. If None, uses environment variable
-                ``HF_MODEL_ID`` or defaults to RoBERTa model.
-            max_len: Maximum sequence length for tokenization.
-            device: PyTorch device string ("cuda", "cpu").
+                ``TRANSFORMER_ROBERTA_MODEL_ID`` or defaults to the bundled model.
+            max_len: Token window length (subword tokens).
+            stride: Sliding-window overlap (subword tokens) for long notes.
+            window_batch_size: Number of windows processed per forward pass.
+            device: PyTorch device string ("cuda" or "cpu"). If None, auto-detects.
 
         Note:
             Model weights are downloaded on first use if not cached.
         """
         self.model_id = model_id or os.getenv(
-            "HF_MODEL_ID", "NicolasUnivalle/roberta-vm-ner-full"
+            "TRANSFORMER_ROBERTA_MODEL_ID", "NicolasUnivalle/roberta-vm-ner-full"
         )
 
         self.max_len = int(max_len)
+        self.stride = int(stride)
+        self.window_batch_size = int(window_batch_size)
         self.device = device
-
-        # FIXED: Always use RoBERTa for experiments
-        self.variant = "roberta"
 
         self.extractor = RobertaTransformerExtractor(
             model_id=self.model_id,
             max_len=self.max_len,
+            stride=self.stride,
+            window_batch_size=self.window_batch_size,
             device=self.device,
         )
 
-        logger.info("TransformerExtractor initialized (FIXED: RoBERTa only)")
+        logger.info("TransformerExtractor initialized: %s", self.model_id)
 
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
@@ -551,8 +511,6 @@ class TransformerExtractor:
         Return metadata from the underlying extractor.
 
         Returns:
-            Dictionary with extractor metadata including facade variant.
+            Dictionary with extractor metadata.
         """
-        meta = self.extractor.meta()
-        meta["facade_variant"] = self.variant
-        return meta
+        return self.extractor.meta()

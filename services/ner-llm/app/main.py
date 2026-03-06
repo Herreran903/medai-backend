@@ -2,7 +2,7 @@
 LLM NER Microservice - FastAPI Application.
 
 This microservice provides clinical Named Entity Recognition using
-Large Language Models (GPT only, fixed for experiments) via a REST API.
+Large Language Models (GPT-only) via a REST API.
 
 Endpoints:
     - POST /predict: Extract entities from clinical text
@@ -52,7 +52,7 @@ app = FastAPI(
     version="1.0.0",
     description=(
         "Clinical Named Entity Recognition microservice using Large Language Models "
-        "(GPT only, fixed for experiments). Extracts structured medical entities from Spanish clinical notes "
+        "(GPT-only). Extracts structured medical entities from Spanish clinical notes "
         "with focus on mechanical ventilation parameters."
     ),
 )
@@ -72,8 +72,7 @@ async def startup_event():
     """
     Initialize LLM extractor at startup.
 
-    FIXED FOR EXPERIMENTS: Only uses GPT provider with gpt-5.2 model.
-    Claude and Local providers are disabled.
+    Uses the GPT provider.
     """
     global _extractor, _model_loaded
 
@@ -82,22 +81,17 @@ async def startup_event():
         _model_loaded = False
         return
 
-    logger.info("Starting LLM NER service (FIXED: GPT-5.2 only)")
+    logger.info("Starting LLM NER service (GPT-only)")
 
     try:
         # Validate OpenAI API key (required)
         if not settings.openai_api_key:
-            logger.error("OPENAI_API_KEY not configured - REQUIRED for experiments")
+            logger.error("OPENAI_API_KEY not configured - REQUIRED for LLM extraction")
             _model_loaded = False
             raise ValueError("OPENAI_API_KEY is required")
 
-        # Initialize GPT extractor with fixed configuration
-        logger.info(f"Initializing LLMExtractor with GPT (model: {settings.gpt_model})")
-        _extractor = LLMExtractor(
-            provider="gpt",
-            api_key=settings.openai_api_key,
-            model=settings.gpt_model,
-        )
+        logger.info(f"Initializing LLMExtractor (model: {settings.gpt_model})")
+        _extractor = LLMExtractor(api_key=settings.openai_api_key, model=settings.gpt_model)
         _model_loaded = True
         logger.info(f"LLM extractor initialized successfully (GPT {settings.gpt_model})")
 
@@ -151,7 +145,7 @@ def readyz():
         return {
             "status": "ready",
             "model_loaded": True,
-            "provider": settings.llm_provider,
+            "provider": "gpt",
         }
     else:
         raise HTTPException(
@@ -159,7 +153,7 @@ def readyz():
             detail={
                 "status": "loading",
                 "model_loaded": False,
-                "provider": settings.llm_provider,
+                "provider": "gpt",
             },
         )
 
@@ -214,7 +208,7 @@ def predict(request: NERRequest):
             detail={
                 "error": {
                     "code": "MODEL_NOT_LOADED",
-                    "message": f"LLM extractor not initialized (provider: {settings.llm_provider})",
+                    "message": "LLM extractor not initialized (provider: gpt)",
                     "detail": "Check API keys configuration",
                 }
             },
@@ -227,16 +221,14 @@ def predict(request: NERRequest):
             entities=[],
             meta={
                 "model": "llm",
-                "provider": settings.llm_provider,
+                "provider": "gpt",
                 "count": 0,
                 "normalized": False,
             },
         )
 
     try:
-        logger.info(
-            f"Processing extraction request (text_length={len(request.text)}, provider={settings.llm_provider})"
-        )
+        logger.info(f"Processing extraction request (text_length={len(request.text)}, provider=gpt)")
         start_time = time.time()
 
         # Extract entities using LLM
@@ -259,7 +251,7 @@ def predict(request: NERRequest):
         # Build metadata
         meta = {
             "model": "llm",
-            "provider": settings.llm_provider,
+            "provider": "gpt",
             "count": len(entities),
             "normalized": False,  # LLM doesn't use UMLS normalization
             "inference_time_ms": round(inference_time_ms, 2),

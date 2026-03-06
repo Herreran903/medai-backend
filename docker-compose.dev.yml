@@ -13,10 +13,8 @@
 #   - ner-bilstm: BiLSTM NER Service (Keras v3 + TensorFlow backend)
 #   - ner-bilstm-crf: BiLSTM-CRF NER Service (TensorFlow)
 #   - ner-crf: CRF NER Service (sklearn-crfsuite)
-#   - ner-llm: LLM NER Service (Anthropic/OpenAI clients)
+#   - ner-llm: LLM NER Service (GPT-only; OpenAI client)
 #   - mongo: MongoDB database (local)
-
-version: "3.8"
 
 services:
   # ===========================================================================
@@ -57,7 +55,7 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
-  # NER Transformer Service (RoBERTa ONLY - Fixed for experiments)
+  # NER Transformer Service (RoBERTa-only)
   # ===========================================================================
   ner-transformer:
     build:
@@ -67,7 +65,6 @@ services:
     env_file:
       - .env.dev
     environment:
-      - MODEL_VARIANT=roberta
       - LOG_LEVEL=info
     volumes:
       # Cache Hugging Face models to avoid re-downloading
@@ -143,7 +140,7 @@ services:
     # No published ports - internal network only
 
   # ===========================================================================
-  # NER LLM Service (Claude/GPT)
+  # NER LLM Service (GPT-only)
   # ===========================================================================
   ner-llm:
     build:
@@ -153,7 +150,6 @@ services:
     env_file:
       - .env.dev
     environment:
-      - LLM_PROVIDER=gpt
       - LOG_LEVEL=info
     volumes:
       # Mount shared schemas (read-only)

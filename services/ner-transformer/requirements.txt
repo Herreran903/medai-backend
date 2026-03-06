@@ -2,7 +2,7 @@
 # MedAI Transformer NER Service Dependencies
 # ==============================================================================
 # PyTorch-based dependencies for Transformer NER service.
-# Includes Hugging Face Transformers for BETO/RoBERTa models.
+# Includes Hugging Face Transformers for RoBERTa.
 
 # --- Web Framework & API ---
 fastapi>=0.104.0

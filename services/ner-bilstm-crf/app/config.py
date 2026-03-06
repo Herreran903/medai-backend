@@ -1,7 +1,7 @@
 """
-Configuration settings for the BiLSTM NER microservice.
+Configuration settings for the BiLSTM-CRF NER microservice.
 
-This module defines environment-based configuration for the BiLSTM service,
+This module defines environment-based configuration for the BiLSTM-CRF service,
 including model path and service settings.
 """
 
@@ -14,7 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     """
-    BiLSTM NER Service configuration settings.
+    BiLSTM-CRF NER Service configuration settings.
 
     All settings can be overridden via environment variables.
     Example: MODEL_DIR="/custom/path" overrides the model_dir field.

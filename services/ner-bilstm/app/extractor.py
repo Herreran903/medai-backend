@@ -9,11 +9,13 @@ model is saved in the Keras v3 ``.keras`` format and must be loaded with the
 standalone ``keras`` package (not legacy ``tf.keras`` from TensorFlow 2.15).
 
 Architecture Context:
-    The BiLSTM extractor is one of three NER models available in MedAI:
+    The BiLSTM extractor is one of five NER models available in MedAI:
 
-    - **BiLSTM** (this module): BiLSTM with BIO tagging, trained on domain data
-    - **Transformer**: Fine-tuned RoBERTa (fixed for experiments)
-    - **LLM**: GPT-based extraction (fixed for experiments)
+    - **BiLSTM** (this module): BiLSTM with BIO tagging (no CRF)
+    - **BiLSTM-CRF**: BiLSTM + CRF decoding (Viterbi)
+    - **CRF**: sklearn-crfsuite model
+    - **Transformer**: Fine-tuned RoBERTa (fixed)
+    - **LLM**: GPT-based extraction (fixed)
 
     The BiLSTM model provides fast inference with moderate accuracy, suitable
     for high-throughput scenarios where transformer latency is prohibitive.

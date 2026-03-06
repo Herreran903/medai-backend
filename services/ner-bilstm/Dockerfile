@@ -31,7 +31,7 @@ COPY services/ner-bilstm/app ./app
 COPY services/ner-bilstm/models ./models
 
 # Shared schemas are mounted via docker-compose volumes
-# See docker-compose.micro.dev.yml: ./shared:/app/shared:ro
+# See docker-compose.dev.yml / docker-compose.prod.yml: ./shared:/app/shared:ro
 
 # Expose service port
 EXPOSE 8002
