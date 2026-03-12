@@ -124,7 +124,11 @@ async def extract_from_text(
     if model not in MODEL_REGISTRY:
         raise ValueError(f"Unsupported model: {model}")
 
-    logger.info("Using extraction model: %s (variant=%s) [microservices mode]", model, model_variant)
+    logger.info(
+        "Using extraction model: %s (variant=%s) [microservices mode]",
+        model,
+        model_variant,
+    )
 
     settings = get_settings()
 
@@ -160,4 +164,3 @@ async def extract_from_text(
     except NERServiceError as exc:
         logger.exception("NER service call failed for model '%s'", model)
         raise RuntimeError(f"NER service unavailable: {exc}") from exc
-

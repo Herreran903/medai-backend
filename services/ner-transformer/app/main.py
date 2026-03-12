@@ -29,16 +29,18 @@ from fastapi.responses import JSONResponse
 # Add parent directory to path for shared module access
 sys.path.insert(0, "/app")
 
-from shared.schemas import Entity, ErrorResponse, NERRequest, NERResponse
-
 from app.config import get_settings
+from shared.schemas import Entity, ErrorResponse, NERRequest, NERResponse
 
 DOCS_BUILD = os.getenv("DOCS_BUILD") == "1"
 
 if DOCS_BUILD:
+
     class TransformerExtractor:  # type: ignore
         """Placeholder to allow OpenAPI export without heavy deps."""
+
         pass
+
 else:
     from app.extractor import TransformerExtractor
 
@@ -225,12 +227,12 @@ def predict(request: NERRequest):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
-                    "error": {
-                        "code": "MODEL_NOT_LOADED",
-                        "message": "Transformer model not initialized (variant: roberta)",
-                        "detail": "Model is still loading from Hugging Face Hub",
-                    }
-                },
+                "error": {
+                    "code": "MODEL_NOT_LOADED",
+                    "message": "Transformer model not initialized (variant: roberta)",
+                    "detail": "Model is still loading from Hugging Face Hub",
+                }
+            },
         )
 
     # Validate input

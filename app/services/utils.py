@@ -48,10 +48,10 @@ def extract_normalized_value(text: str, entity_type: str) -> Optional[str]:
 
     # Patrones numéricos (orden importa: de más específico a más general)
     numeric_patterns = [
-        (r'(\d+)/(\d+)', lambda m: m.group(0)),              # "120/80" → "120/80"
-        (r'(\d+):(\d+(?:\.\d+)?)', lambda m: m.group(0)),    # "1:2" → "1:2"
-        (r'(\d+(?:\.\d+)?)\s*%', lambda m: m.group(1)),      # "40%" → "40"
-        (r'(-?\d+(?:\.\d+)?)', lambda m: m.group(1)),        # Número general
+        (r"(\d+)/(\d+)", lambda m: m.group(0)),  # "120/80" → "120/80"
+        (r"(\d+):(\d+(?:\.\d+)?)", lambda m: m.group(0)),  # "1:2" → "1:2"
+        (r"(\d+(?:\.\d+)?)\s*%", lambda m: m.group(1)),  # "40%" → "40"
+        (r"(-?\d+(?:\.\d+)?)", lambda m: m.group(1)),  # Número general
     ]
 
     for pattern, extractor in numeric_patterns:
@@ -64,10 +64,10 @@ def extract_normalized_value(text: str, entity_type: str) -> Optional[str]:
 
     # Para MODO: remover palabras como "modo", "en modo", "VMI"
     if entity_type == "MODO":
-        clean = re.sub(r'^(modo|en\s+modo|VMI)\s+', '', clean, flags=re.IGNORECASE)
+        clean = re.sub(r"^(modo|en\s+modo|VMI)\s+", "", clean, flags=re.IGNORECASE)
 
     # Para PESO/EDAD: remover palabras descriptivas
     if entity_type in ["PESO", "EDAD"]:
-        clean = re.sub(r'^(peso|edad|Peso|Edad)[\s:]+', '', clean, flags=re.IGNORECASE)
+        clean = re.sub(r"^(peso|edad|Peso|Edad)[\s:]+", "", clean, flags=re.IGNORECASE)
 
     return clean.strip() if clean else None

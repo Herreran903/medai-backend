@@ -13,10 +13,10 @@ Windowing Strategy:
 
 Model Details:
     - Base: PlanTL-GOB-ES/roberta-base-bne
-    - Fine-tuned: NicolasUnivalle/roberta-vm-ner-full
+    - Fine-tuned: NicolasUnivalle/roberta-vm-ner
 
 Configuration:
-    - ``TRANSFORMER_ROBERTA_MODEL_ID`` (default: NicolasUnivalle/roberta-vm-ner-full)
+    - ``TRANSFORMER_ROBERTA_MODEL_ID`` (default: NicolasUnivalle/roberta-vm-ner)
     - ``TRANSFORMER_MAX_LEN`` (default: 512)
     - ``TRANSFORMER_STRIDE`` (default: 128)
     - ``TRANSFORMER_WINDOW_BATCH_SIZE`` (default: 8)
@@ -57,9 +57,9 @@ class BaseTransformerExtractor:
     Implements the core extraction pipeline aligned with the training notebook:
 
     1. Tokenize with offset mapping (sliding windows with stride for long texts)
-    2. Predict BIO tags per subtoken
-    3. Reconstruct word-level predictions ("first subtoken wins")
-    4. Decode BIO sequences to entity spans
+    2. Predict logits per subtoken
+    3. Reconstruct word-level predictions (first subtoken + overlap merge)
+    4. Normalize BIO sequence and decode entity spans
 
     This class is not intended for direct use. Use the variant-specific
     subclasses or the :class:`TransformerExtractor` facade instead.
@@ -92,7 +92,7 @@ class BaseTransformerExtractor:
         Initialize the base Transformer extractor.
 
         Args:
-            model_id: Hugging Face model identifier (e.g., "NicolasUnivalle/roberta-vm-ner-full")
+            model_id: Hugging Face model identifier (e.g., "NicolasUnivalle/roberta-vm-ner")
                 or path to local model directory.
             max_len: Token window length (subword tokens). Long notes are
                 processed with sliding windows instead of being truncated to
@@ -153,6 +153,33 @@ class BaseTransformerExtractor:
             int(k): str(v) for k, v in self.model.config.id2label.items()
         }
 
+    @staticmethod
+    def _normalize_bio_sequence(tags: List[str]) -> List[str]:
+        """
+        Normalize invalid BIO transitions.
+
+        Rules (notebook-aligned):
+        - I-X at sequence start -> B-X
+        - I-X after O -> B-X
+        - I-X after B-Y/I-Y with Y != X -> B-X
+        """
+        normalized: List[str] = []
+        prev_tag = "O"
+
+        for raw_tag in tags:
+            tag = str(raw_tag)
+            if tag.startswith("I-"):
+                ent_type = tag[2:]
+                prev_is_entity = prev_tag.startswith(("B-", "I-"))
+                prev_type = prev_tag[2:] if prev_is_entity else None
+                if (not prev_is_entity) or (prev_type != ent_type):
+                    tag = f"B-{ent_type}"
+
+            normalized.append(tag)
+            prev_tag = tag
+
+        return normalized
+
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """
         Extract clinical entities from text.
@@ -177,7 +204,7 @@ class BaseTransformerExtractor:
             - ``code``: Normalized value (None initially, populated by pipeline)
 
         Example:
-            >>> extractor = BaseTransformerExtractor("NicolasUnivalle/roberta-vm-ner-full")
+            >>> extractor = BaseTransformerExtractor("NicolasUnivalle/roberta-vm-ner")
             >>> entities = extractor.predict("FiO2 60%, PEEP 8 cmH2O")
             >>> entities[0]
             {'type': 'FIO2', 'text': '60%', 'start': 5, 'end': 8, 'code': None}
@@ -193,24 +220,13 @@ class BaseTransformerExtractor:
             max_length=self.MAX_LEN,
             stride=self.STRIDE,
             return_overflowing_tokens=True,
-            padding=True,
+            padding="max_length",
             return_tensors="pt",
         )
 
         input_ids = enc["input_ids"].to(self.device)
         attention_mask = enc["attention_mask"].to(self.device)
 
-        # Model inference (batched over windows)
-        preds_batch: List[List[int]] = []
-        with torch.no_grad():
-            num_windows = int(input_ids.shape[0])
-            for start in range(0, num_windows, self.WINDOW_BATCH_SIZE):
-                end = start + self.WINDOW_BATCH_SIZE
-                logits = self.model(
-                    input_ids=input_ids[start:end],
-                    attention_mask=attention_mask[start:end],
-                ).logits
-                preds_batch.extend(logits.argmax(dim=-1).tolist())
         offsets_batch_raw = enc["offset_mapping"]
         offsets_batch = (
             offsets_batch_raw.tolist()
@@ -218,59 +234,84 @@ class BaseTransformerExtractor:
             else offsets_batch_raw
         )
 
-        # Merge word-level tags across windows by selecting the most "central"
-        # prediction for each word span (character offsets).
-        #
-        # This reduces boundary artifacts from chunking and enables global BIO decoding.
-        best_word_tag: Dict[tuple[int, int], tuple[str, int]] = {}
+        # Merge overlapping windows by averaging logits per word.
+        # Voting uses first subtoken per window (notebook-aligned), while
+        # character spans are expanded with all subtokens of each word.
+        word_logit_sum: Dict[int, torch.Tensor] = {}
+        word_logit_count: Dict[int, int] = {}
+        word_char_span: Dict[int, List[int]] = {}
 
-        for win_idx, preds in enumerate(preds_batch):
-            tags = [self.id2label.get(int(p), "O") for p in preds]
-            offsets = offsets_batch[win_idx]
-            word_ids = enc.word_ids(batch_index=win_idx)
+        with torch.no_grad():
+            num_windows = int(input_ids.shape[0])
+            for start in range(0, num_windows, self.WINDOW_BATCH_SIZE):
+                end = min(start + self.WINDOW_BATCH_SIZE, num_windows)
+                logits_batch = (
+                    self.model(
+                        input_ids=input_ids[start:end],
+                        attention_mask=attention_mask[start:end],
+                    )
+                    .logits.detach()
+                    .cpu()
+                )
 
-            words = []
-            current = None
+                for local_idx in range(logits_batch.shape[0]):
+                    win_idx = start + local_idx
+                    chunk_logits = logits_batch[local_idx]
+                    offsets = offsets_batch[win_idx]
+                    word_ids = enc.word_ids(batch_index=win_idx)
+                    seen_word_ids = set()
 
-            for tok_i, w_id in enumerate(word_ids):
-                if w_id is None:
-                    continue  # Skip special/pad tokens
+                    for tok_i, word_id in enumerate(word_ids):
+                        if word_id is None:
+                            continue
 
-                s, e = offsets[tok_i]
-                if s == e:
-                    continue  # Skip empty offsets
+                        s, e = offsets[tok_i]
+                        if s == e:
+                            continue
 
-                tag = tags[tok_i]
+                        word_idx = int(word_id)
+                        prev_span = word_char_span.get(word_idx)
+                        if prev_span is None:
+                            word_char_span[word_idx] = [int(s), int(e)]
+                        else:
+                            prev_span[0] = min(prev_span[0], int(s))
+                            prev_span[1] = max(prev_span[1], int(e))
 
-                if current is None or w_id != current["word_id"]:
-                    if current:
-                        words.append(current)
-                    current = {
-                        "word_id": w_id,
-                        "start": int(s),
-                        "end": int(e),
-                        "tag": tag,
-                        "tok_i": tok_i,
-                    }
-                else:
-                    current["end"] = max(current["end"], int(e))
+                        # First subtoken vote per window
+                        if word_idx in seen_word_ids:
+                            continue
+                        seen_word_ids.add(word_idx)
 
-            if current:
-                words.append(current)
+                        logits_row = chunk_logits[tok_i]
+                        if word_idx in word_logit_sum:
+                            word_logit_sum[word_idx] += logits_row
+                            word_logit_count[word_idx] += 1
+                        else:
+                            word_logit_sum[word_idx] = logits_row.clone()
+                            word_logit_count[word_idx] = 1
 
-            for w in words:
-                key = (w["start"], w["end"])
-                # Higher is better: farther from window edges.
-                score = min(int(w["tok_i"]), (self.MAX_LEN - 1) - int(w["tok_i"]))
-                prev = best_word_tag.get(key)
-                if prev is None or score > prev[1]:
-                    best_word_tag[key] = (str(w["tag"]), score)
-
-        merged_words = [
-            {"start": s, "end": e, "tag": tag}
-            for (s, e), (tag, _score) in best_word_tag.items()
-        ]
+        merged_words: List[Dict[str, Any]] = []
+        for word_idx, logits_sum in word_logit_sum.items():
+            votes = word_logit_count[word_idx]
+            avg_logits = logits_sum / float(votes)
+            pred_id = int(avg_logits.argmax().item())
+            span = word_char_span.get(word_idx)
+            if not span:
+                continue
+            s, e = int(span[0]), int(span[1])
+            if s >= e:
+                continue
+            merged_words.append(
+                {"start": s, "end": e, "tag": self.id2label.get(pred_id, "O")}
+            )
         merged_words.sort(key=lambda w: (w["start"], w["end"]))
+
+        # Normalize invalid BIO transitions before span decoding.
+        normalized_tags = self._normalize_bio_sequence(
+            [str(w["tag"]) for w in merged_words]
+        )
+        for w, normalized_tag in zip(merged_words, normalized_tags):
+            w["tag"] = normalized_tag
 
         # BIO decoding (notebook-aligned)
         spans = []
@@ -338,7 +379,10 @@ class BaseTransformerExtractor:
             "window_batch_size": self.WINDOW_BATCH_SIZE,
             "device": str(self.device),
             "labels": sorted(set(self.id2label.values())),
-            "decoder": "BIO-first-subtoken + sliding-window merge (notebook-aligned)",
+            "decoder": (
+                "BIO-first-subtoken + sliding-window overlap merge (mean logits) "
+                "+ BIO normalization (notebook-aligned)"
+            ),
         }
 
 
@@ -357,7 +401,7 @@ class RobertaTransformerExtractor(BaseTransformerExtractor):
     Model Details:
         - Base: PlanTL-GOB-ES/roberta-base-bne
         - Fine-tuning: NER on mechanical ventilation notes
-        - Hugging Face: NicolasUnivalle/roberta-vm-ner-full
+        - Hugging Face: NicolasUnivalle/roberta-vm-ner
 
     Attributes:
         Inherits all attributes from :class:`BaseTransformerExtractor`.
@@ -386,7 +430,7 @@ class RobertaTransformerExtractor(BaseTransformerExtractor):
 
         Args:
             model_id: Hugging Face model ID. Defaults to environment variable
-                ``TRANSFORMER_ROBERTA_MODEL_ID`` or "NicolasUnivalle/roberta-vm-ner-full".
+                ``TRANSFORMER_ROBERTA_MODEL_ID`` or "NicolasUnivalle/roberta-vm-ner".
             max_len: Token window length (subword tokens).
             stride: Sliding-window overlap (subword tokens) for long notes.
             window_batch_size: Number of windows processed per forward pass.
@@ -394,7 +438,7 @@ class RobertaTransformerExtractor(BaseTransformerExtractor):
         """
         model_id = model_id or os.getenv(
             "TRANSFORMER_ROBERTA_MODEL_ID",
-            "NicolasUnivalle/roberta-vm-ner-full",
+            "NicolasUnivalle/roberta-vm-ner",
         )
 
         super().__init__(
@@ -474,7 +518,7 @@ class TransformerExtractor:
             Model weights are downloaded on first use if not cached.
         """
         self.model_id = model_id or os.getenv(
-            "TRANSFORMER_ROBERTA_MODEL_ID", "NicolasUnivalle/roberta-vm-ner-full"
+            "TRANSFORMER_ROBERTA_MODEL_ID", "NicolasUnivalle/roberta-vm-ner"
         )
 
         self.max_len = int(max_len)

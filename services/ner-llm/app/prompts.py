@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import List, Optional
 
 # Ruta por defecto del archivo de ejemplos few-shot
-_DEFAULT_FEW_SHOT_PATH = Path(__file__).resolve().parent / "examples" / "few_shot_examples.json"
+_DEFAULT_FEW_SHOT_PATH = (
+    Path(__file__).resolve().parent / "examples" / "few_shot_examples.json"
+)
 
 
 def load_few_shot_examples(path: Optional[Path] = None) -> List[dict]:
@@ -196,6 +198,7 @@ Extrae las entidades en formato JSON estructurado."""
 # =============================================================================
 # FUNCIONES DE FORMATEO DE PROMPTS
 # =============================================================================
+
 
 def _format_few_shot_examples(few_shot_examples: List[dict]) -> str:
     """Convierte ejemplos few-shot (texto + entidades) en bloque de prompt."""

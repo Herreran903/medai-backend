@@ -190,7 +190,13 @@ class ExtractResponse(BaseModel):
     meta: Dict[str, Any] = Field(
         default_factory=dict,
         description="Extraction metadata including model info and statistics.",
-        json_schema_extra={"example": {"model": "transformer", "inference_time_ms": 120.5, "entity_count": 2}},
+        json_schema_extra={
+            "example": {
+                "model": "transformer",
+                "inference_time_ms": 120.5,
+                "entity_count": 2,
+            }
+        },
     )
 
 

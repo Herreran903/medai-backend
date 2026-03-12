@@ -53,7 +53,6 @@ class EpisodeRepository:
         Args:
             db: MongoDB database instance from get_db dependency
         """
-        self.db = db
         self.collection = db.episodes
 
     @staticmethod
@@ -172,18 +171,6 @@ class EpisodeRepository:
         )
 
         return note_id
-
-    async def get_episode(self, episode_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve complete episode document.
-
-        Args:
-            episode_id: Episode identifier
-
-        Returns:
-            Episode document if found, None otherwise
-        """
-        return self.collection.find_one({"_id": episode_id})
 
     def build_note_document(
         self,

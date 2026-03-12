@@ -65,18 +65,18 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from .prompts import SYSTEM_PROMPT, build_user_prompt, load_few_shot_examples
 
 # Logger configuration
 logger = logging.getLogger(__name__)
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    fmt = logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
-    handler.setFormatter(fmt)
-    logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+
+_PROMPT_MODES = {"zero_shot", "few_shot"}
 
 
 # ==============================================================================
@@ -93,7 +93,9 @@ class LLMEntity(BaseModel):
     text: str = Field(..., description="Texto exacto de la entidad en el input")
     start: int = Field(..., ge=0, description="Offset inicial (char)")
     end: int = Field(..., ge=0, description="Offset final (char)")
-    score: Optional[float] = Field(0.0, ge=0.0, le=1.0, description="Confianza normalizada [0,1]")
+    score: Optional[float] = Field(
+        0.0, ge=0.0, le=1.0, description="Confianza normalizada [0,1]"
+    )
     code: Optional[str] = Field(None, description="Codigo clinico opcional")
 
 
@@ -125,13 +127,6 @@ Used for:
 - Validating extracted entity types
 - Grouping entities in output
 """
-
-
-# ==============================================================================
-# Prompts (imported from prompts.py — single source of truth)
-# ==============================================================================
-
-from .prompts import SYSTEM_PROMPT, build_user_prompt, load_few_shot_examples
 
 
 # ==============================================================================
@@ -190,6 +185,122 @@ def _normalize_llm_payload(payload: Any) -> dict:
     return {"entities": []}
 
 
+@dataclass(frozen=True)
+class ResolvedSpan:
+    start: int
+    end: int
+    method: str
+
+
+def _find_spans(text: str, query: str, *, case_sensitive: bool) -> List[int]:
+    if not query:
+        return []
+    hay = text if case_sensitive else text.lower()
+    needle = query if case_sensitive else query.lower()
+    positions: List[int] = []
+    start = 0
+    while True:
+        idx = hay.find(needle, start)
+        if idx == -1:
+            break
+        positions.append(idx)
+        start = idx + 1
+    return positions
+
+
+def _resolve_entity_offsets(
+    text: str, entity: LLMEntity
+) -> Tuple[Optional[ResolvedSpan], str]:
+    """
+    Resolve entity offsets against the real input text.
+
+    Resolution strategy mirrors the notebook:
+    1. Accept provided offsets if exact (or case-insensitive exact).
+    2. Search exact text occurrence(s), optionally using provided offset as hint.
+    3. Search case-insensitive occurrence(s).
+    4. Fallback to normalized search without spaces.
+    """
+    raw_text = (entity.text or "").strip()
+    if not raw_text:
+        return None, "empty_text"
+
+    provided_start = entity.start
+    provided_end = entity.end
+
+    if 0 <= provided_start < provided_end <= len(text):
+        extracted = text[provided_start:provided_end]
+        if extracted == raw_text:
+            return ResolvedSpan(provided_start, provided_end, "provided_exact"), "ok"
+        if extracted.lower() == raw_text.lower():
+            return (
+                ResolvedSpan(provided_start, provided_end, "provided_case_insensitive"),
+                "ok",
+            )
+
+    hits = _find_spans(text, raw_text, case_sensitive=True)
+    if len(hits) == 1:
+        start = hits[0]
+        return ResolvedSpan(start, start + len(raw_text), "exact_unique"), "ok"
+    if len(hits) > 1:
+        if provided_start is not None:
+            closest = min(hits, key=lambda h: abs(h - provided_start))
+            if abs(closest - provided_start) <= 100:
+                return (
+                    ResolvedSpan(closest, closest + len(raw_text), "exact_closest"),
+                    "ok",
+                )
+        start = hits[0]
+        return ResolvedSpan(start, start + len(raw_text), "exact_first"), "ok"
+
+    hits = _find_spans(text, raw_text, case_sensitive=False)
+    if len(hits) == 1:
+        start = hits[0]
+        return (
+            ResolvedSpan(start, start + len(raw_text), "case_insensitive_unique"),
+            "ok",
+        )
+    if len(hits) > 1:
+        if provided_start is not None:
+            closest = min(hits, key=lambda h: abs(h - provided_start))
+            if abs(closest - provided_start) <= 100:
+                return (
+                    ResolvedSpan(
+                        closest, closest + len(raw_text), "case_insensitive_closest"
+                    ),
+                    "ok",
+                )
+        start = hits[0]
+        return (
+            ResolvedSpan(start, start + len(raw_text), "case_insensitive_first"),
+            "ok",
+        )
+
+    raw_no_space = raw_text.replace(" ", "").lower()
+    if len(raw_no_space) >= 2:
+        text_no_space = text.replace(" ", "").lower()
+        idx_no_space = text_no_space.find(raw_no_space)
+        if idx_no_space != -1:
+            matched = 0
+            real_start = None
+            real_end = None
+            for i, ch in enumerate(text):
+                if ch == " ":
+                    continue
+                if matched == idx_no_space and real_start is None:
+                    real_start = i
+                if idx_no_space <= matched < idx_no_space + len(raw_no_space):
+                    real_end = i + 1
+                matched += 1
+            if (
+                real_start is not None
+                and real_end is not None
+                and real_start < real_end
+            ):
+                return ResolvedSpan(real_start, real_end, "normalized_match"), "ok"
+
+    return None, "not_found"
+
+
 # ==============================================================================
 # GPT LLM Extractor
 # ==============================================================================
@@ -206,7 +317,7 @@ class GPTLLMExtractor:
     Architecture:
         Uses ``response_format={"type": "json_schema", ...}`` in strict mode
         when available, and falls back to prompt-based JSON parsing if needed.
-        Few-shot prompting is hardcoded (prompt_mode="few_shot").
+        Prompting mode defaults to ``few_shot`` and is configurable.
 
     Attributes:
         api_key: OpenAI API key for authentication.
@@ -229,13 +340,27 @@ class GPTLLMExtractor:
         self,
         api_key: Optional[str] = None,
         model: str = "gpt-5.4",
+        *,
+        temperature: float = 0.0,
+        max_output_tokens: int = 4000,
+        prompt_mode: str = "few_shot",
+        max_retries: int = 3,
+        retry_sleep: float = 2.0,
     ) -> None:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.model = model
-        # Keep provider default temperature to preserve compatibility with
-        # models that do not accept custom temperature values.
-        self.temperature: Optional[float] = None
+        self.temperature = float(temperature)
+        self.max_output_tokens = int(max_output_tokens)
+        normalized_prompt_mode = str(prompt_mode or "few_shot").strip().lower()
+        self.prompt_mode = (
+            normalized_prompt_mode
+            if normalized_prompt_mode in _PROMPT_MODES
+            else "few_shot"
+        )
+        self.max_retries = max(1, int(max_retries))
+        self.retry_sleep = max(0.0, float(retry_sleep))
         self.client = None
+        self.last_raw: Optional[str] = None
 
         # Derive entity types from category mapping
         self.entity_types = sorted(
@@ -262,6 +387,77 @@ class GPTLLMExtractor:
                 "OPENAI_API_KEY not configured. Extractor will not function."
             )
 
+    def _build_prompt_args(
+        self, text: str, include_schema: bool, schema: dict
+    ) -> Dict[str, Any]:
+        few_shot_examples = (
+            self.few_shot_examples if self.prompt_mode == "few_shot" else []
+        )
+        return {
+            "text": text,
+            "entity_types": self.entity_types,
+            "schema": schema,
+            "include_schema": include_schema,
+            "prompt_mode": self.prompt_mode,
+            "few_shot_examples": few_shot_examples,
+        }
+
+    def _extract_payload_once(self, text: str, schema: dict) -> Any:
+        # Deep copy avoids mutating the canonical schema structure.
+        openai_schema = json.loads(json.dumps(schema))
+        _fix_schema_for_openai(openai_schema)
+
+        try:
+            user_prompt = build_user_prompt(
+                **self._build_prompt_args(
+                    text=text, include_schema=False, schema=schema
+                )
+            )
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=self.temperature,
+                max_completion_tokens=self.max_output_tokens,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "ClinicalEntities",
+                        "strict": True,
+                        "schema": openai_schema,
+                    },
+                },
+            )
+            raw = response.choices[0].message.content or ""
+            self.last_raw = raw
+            return json.loads(raw)
+        except Exception as exc:
+            # Notebook behavior: only fallback to prompt-only mode when
+            # response_format is unsupported for the selected model/provider.
+            if "response_format" not in str(exc):
+                raise
+
+            logger.warning(
+                "Structured outputs unavailable, using prompt-only fallback: %s", exc
+            )
+            user_prompt = build_user_prompt(
+                **self._build_prompt_args(text=text, include_schema=True, schema=schema)
+            )
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=self.temperature,
+                max_completion_tokens=self.max_output_tokens,
+            )
+            raw = response.choices[0].message.content or ""
+            self.last_raw = raw
+            return json.loads(_extract_json_block(raw))
+
     def predict(self, text: str) -> List[Dict[str, Any]]:
         """Extract clinical entities from text using GPT (aligned with notebook)."""
         if not self.client:
@@ -271,86 +467,76 @@ class GPTLLMExtractor:
         if not text or not text.strip():
             return []
 
-        try:
-            schema = LLMOutput.model_json_schema()
+        schema = LLMOutput.model_json_schema()
+        last_exc: Optional[Exception] = None
 
-            # Build user prompt with few-shot (hardcoded)
-            user_prompt = build_user_prompt(
-                text,
-                self.entity_types,
-                schema,
-                prompt_mode="few_shot",
-                few_shot_examples=self.few_shot_examples,
-            )
-
-            # Prepare schema for OpenAI strict mode
-            openai_schema = schema.copy()
-            _fix_schema_for_openai(openai_schema)
-
-            # API call with structured outputs
+        for attempt in range(1, self.max_retries + 1):
             try:
-                request_kwargs = {
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "response_format": {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "ClinicalEntities",
-                            "strict": True,
-                            "schema": openai_schema,
-                        },
-                    },
-                    "max_completion_tokens": 4000,
-                }
-                if self.temperature is not None:
-                    request_kwargs["temperature"] = self.temperature
+                payload = self._extract_payload_once(text=text, schema=schema)
+                payload = _normalize_llm_payload(payload)
+                llm_output = LLMOutput.model_validate(payload)
 
-                response = self.client.chat.completions.create(**request_kwargs)
-                raw = response.choices[0].message.content
-                payload = json.loads(raw)
-            except Exception as e:
-                # Fallback without structured outputs
-                logger.warning("Structured outputs failed, using fallback: %s", e)
-                fallback_kwargs = {
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "max_completion_tokens": 4000,
-                }
-                if self.temperature is not None:
-                    fallback_kwargs["temperature"] = self.temperature
+                result = []
+                dropped = 0
+                for entity in llm_output.entities:
+                    resolved, status = _resolve_entity_offsets(text, entity)
+                    if not resolved:
+                        dropped += 1
+                        logger.warning(
+                            "Dropping entity due to unresolved offsets (%s): %s",
+                            status,
+                            entity.model_dump(),
+                        )
+                        continue
 
-                response = self.client.chat.completions.create(**fallback_kwargs)
-                raw = response.choices[0].message.content
-                raw_json = _extract_json_block(raw)
-                payload = json.loads(raw_json)
+                    span_text = text[resolved.start : resolved.end]
+                    result.append(
+                        {
+                            "type": entity.type,
+                            "text": span_text,
+                            "start": resolved.start,
+                            "end": resolved.end,
+                            "code": entity.code,
+                        }
+                    )
 
-            # Normalize and validate
-            payload = _normalize_llm_payload(payload)
-            llm_output = LLMOutput.model_validate(payload)
+                if dropped:
+                    logger.warning(
+                        "Dropped %d entities after offset reconciliation",
+                        dropped,
+                    )
+                logger.info("Extracted %d clinical entities with GPT", len(result))
+                return result
+            except (ValidationError, json.JSONDecodeError, KeyError) as exc:
+                last_exc = exc
+                raw_preview = (self.last_raw or "")[:300].replace("\n", " ")
+                logger.warning(
+                    "LLM payload validation failed (attempt %d/%d): %s | raw_preview=%s",
+                    attempt,
+                    self.max_retries,
+                    exc,
+                    raw_preview or "N/A",
+                )
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "LLM extraction attempt failed (%d/%d): %s",
+                    attempt,
+                    self.max_retries,
+                    exc,
+                )
 
-            # Convert to pipeline-compatible format
-            result = []
-            for entity in llm_output.entities:
-                result.append({
-                    "type": entity.type,
-                    "text": entity.text,
-                    "start": entity.start,
-                    "end": entity.end,
-                    "code": entity.code,
-                })
+            if attempt < self.max_retries and self.retry_sleep > 0:
+                time.sleep(self.retry_sleep)
 
-            logger.info("Extracted %d clinical entities with GPT", len(result))
-            return result
-
-        except Exception as e:
-            logger.error("Error in GPT extraction: %s", e)
-            return []
+        raw_preview = (self.last_raw or "")[:400].replace("\n", " ")
+        logger.error(
+            "Error in GPT extraction after %d attempts: %s | last_raw_preview=%s",
+            self.max_retries,
+            last_exc,
+            raw_preview or "N/A",
+        )
+        return []
 
     def meta(self) -> Dict[str, Any]:
         """
@@ -361,7 +547,10 @@ class GPTLLMExtractor:
         """
         return {
             "model": self.model,
-            "provider": "openai",
+            "provider": "gpt",
+            "prompt_mode": self.prompt_mode,
+            "temperature": self.temperature,
+            "max_output_tokens": self.max_output_tokens,
         }
 
 
@@ -379,8 +568,8 @@ class LLMExtractor:
     Configuration:
         - Provider: GPT (forced)
         - Model: gpt-5.4 (default)
-        - Temperature: provider default
-        - Prompting: few-shot (hardcoded)
+        - Temperature: 0.0 (default)
+        - Prompting: few-shot (default)
 
     Attributes:
         provider: Always "gpt" (fixed).
@@ -398,6 +587,12 @@ class LLMExtractor:
         self,
         api_key: str,
         model: str = "gpt-5.4",
+        *,
+        temperature: float = 0.0,
+        max_output_tokens: int = 4000,
+        prompt_mode: str = "few_shot",
+        max_retries: int = 3,
+        retry_sleep: float = 2.0,
     ) -> None:
         """
         Initialize the LLM extractor (GPT-only).
@@ -409,8 +604,6 @@ class LLMExtractor:
         Raises:
             ValueError: If OpenAI API key is not provided.
         """
-        self.provider = "gpt"
-
         if not api_key:
             raise ValueError("OpenAI API key required for GPT extractor")
 
@@ -418,6 +611,11 @@ class LLMExtractor:
         self.extractor = GPTLLMExtractor(
             api_key=api_key,
             model=model,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            prompt_mode=prompt_mode,
+            max_retries=max_retries,
+            retry_sleep=retry_sleep,
         )
 
         logger.info("LLMExtractor initialized with provider: gpt (model: %s)", model)

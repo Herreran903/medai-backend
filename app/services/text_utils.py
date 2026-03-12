@@ -41,7 +41,6 @@ See Also:
 import os
 import re
 import tempfile
-from typing import Optional
 
 import docx2txt
 import fitz

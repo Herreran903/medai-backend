@@ -38,7 +38,7 @@ class Settings(BaseSettings):
 
     # Hugging Face model IDs
     transformer_roberta_model_id: str = Field(
-        default="NicolasUnivalle/roberta-vm-ner-full",
+        default="NicolasUnivalle/roberta-vm-ner",
         description="Hugging Face model ID for RoBERTa-based clinical NER (ACTIVE)",
     )
 

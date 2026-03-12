@@ -140,7 +140,7 @@ class NERClient:
         )
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, _exc_type, _exc_val, _exc_tb):
         """
         Context manager exit: close HTTP client and cleanup resources.
 
@@ -234,7 +234,9 @@ class NERClient:
         try:
             retrying = AsyncRetrying(
                 stop=stop_after_attempt(self.settings.ner_retry_attempts),
-                wait=wait_exponential(multiplier=1, min=2, max=10),  # 2s, 4s, 8s backoff
+                wait=wait_exponential(
+                    multiplier=1, min=2, max=10
+                ),  # 2s, 4s, 8s backoff
                 retry=retry_if_exception_type(
                     (httpx.TimeoutException, httpx.NetworkError)
                 ),  # Only retry transient errors

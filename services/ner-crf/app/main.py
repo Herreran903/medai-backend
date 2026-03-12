@@ -25,17 +25,18 @@ from fastapi.responses import JSONResponse
 # Add parent directory to path for shared module access
 sys.path.insert(0, "/app")
 
-from shared.schemas import Entity, ErrorResponse, NERRequest, NERResponse
-
 from app.config import get_settings
+from shared.schemas import Entity, ErrorResponse, NERRequest, NERResponse
 
 DOCS_BUILD = os.getenv("DOCS_BUILD") == "1"
 
 if DOCS_BUILD:
+
     class CRFExtractor:  # type: ignore
         """Placeholder to allow OpenAPI export without heavy deps."""
 
         pass
+
 else:
     from app.extractor import CRFExtractor
 
@@ -207,7 +208,9 @@ def predict(request: NERRequest):
             try:
                 entities.append(Entity(**e))
             except Exception as entity_error:
-                logger.warning("Invalid entity format, skipping: %s (error: %s)", e, entity_error)
+                logger.warning(
+                    "Invalid entity format, skipping: %s (error: %s)", e, entity_error
+                )
                 continue
 
         meta = {
@@ -263,4 +266,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8004, log_level=settings.log_level.lower())
-

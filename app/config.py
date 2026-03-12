@@ -162,7 +162,7 @@ class Settings(BaseSettings):
 
     @field_validator("cors_origins", mode="before")
     @classmethod
-    def parse_string_list(cls, v):
+    def parse_string_list(_cls, v):
         """Parse list fields from comma-separated string or list."""
         if isinstance(v, str):
             return [item.strip() for item in v.split(",") if item.strip()]

@@ -12,7 +12,9 @@ class Entity(BaseModel):
 
     type: str = Field(..., description="Entity type (e.g., FIO2, PEEP, DX)")
     text: str = Field(..., description="Exact text span extracted")
-    start: Optional[int] = Field(default=None, ge=0, description="Start character offset")
+    start: Optional[int] = Field(
+        default=None, ge=0, description="Start character offset"
+    )
     end: Optional[int] = Field(default=None, ge=0, description="End character offset")
     code: Optional[str] = Field(
         default=None,

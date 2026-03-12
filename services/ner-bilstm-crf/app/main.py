@@ -25,16 +25,18 @@ from fastapi.responses import JSONResponse
 # Add parent directory to path for shared module access
 sys.path.insert(0, "/app")
 
-from shared.schemas import Entity, ErrorResponse, NERRequest, NERResponse
-
 from app.config import get_settings
+from shared.schemas import Entity, ErrorResponse, NERRequest, NERResponse
 
 DOCS_BUILD = os.getenv("DOCS_BUILD") == "1"
 
 if DOCS_BUILD:
+
     class LSTMExtractor:  # type: ignore
         """Placeholder to allow OpenAPI export without heavy deps."""
+
         pass
+
 else:
     from app.extractor import LSTMExtractor
 
@@ -224,9 +226,7 @@ def predict(request: NERRequest):
         )
 
     try:
-        logger.info(
-            f"Processing extraction request (text_length={len(request.text)})"
-        )
+        logger.info(f"Processing extraction request (text_length={len(request.text)})")
         start_time = time.time()
 
         # Extract entities using BiLSTM-CRF

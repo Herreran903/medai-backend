@@ -1,74 +1,8 @@
 """
 BiLSTM Named Entity Recognition Model for Clinical Text.
 
-This module implements a BiLSTM-based Named Entity Recognition (NER) extractor
-for clinical text, specifically trained on mechanical ventilation notes in Spanish.
-
-This service targets the **BiLSTM-only** variant (no CRF layer). The provided
-model is saved in the Keras v3 ``.keras`` format and must be loaded with the
-standalone ``keras`` package (not legacy ``tf.keras`` from TensorFlow 2.15).
-
-Architecture Context:
-    The BiLSTM extractor is one of five NER models available in MedAI:
-
-    - **BiLSTM** (this module): BiLSTM with BIO tagging (no CRF)
-    - **BiLSTM-CRF**: BiLSTM + CRF decoding (Viterbi)
-    - **CRF**: sklearn-crfsuite model
-    - **Transformer**: Fine-tuned RoBERTa (fixed)
-    - **LLM**: GPT-based extraction (fixed)
-
-    The BiLSTM model provides fast inference with moderate accuracy, suitable
-    for high-throughput scenarios where transformer latency is prohibitive.
-
-Model Architecture:
-    The underlying model is a Bidirectional LSTM with:
-
-    - Word embedding layer (vocabulary from training corpus)
-    - Bidirectional LSTM layers for sequence encoding
-    - Softmax classification head for BIO tag probabilities
-    - Post-processing for BIO to entity span conversion
-
-BIO Tagging Scheme:
-    The model uses the BIO (Beginning-Inside-Outside) tagging scheme:
-
-    - ``B-{TYPE}``: Beginning of an entity of type TYPE
-    - ``I-{TYPE}``: Inside/continuation of an entity
-    - ``O``: Outside any entity (non-entity token)
-
-    Example::
-
-        Token:  "FiO2"  "60"   "%"    "PEEP"  "8"
-        Tag:    B-FIO2  I-FIO2 I-FIO2 B-PEEP  I-PEEP
-
-Model Files:
-    The model requires the following files in the model directory:
-
-    - ``model.keras``: Keras v3 model weights (required)
-    - ``word2idx.json``: Vocabulary mapping (word -> integer ID)
-    - ``tag2idx.json``: Tag mapping (BIO tag -> integer ID)
-    - ``config.json``: Model configuration (max_len, pad_id)
-
-Usage:
-    >>> from app.extractor import LSTMExtractor
-    >>> extractor = LSTMExtractor()
-    >>> entities = extractor.predict("Paciente con FiO2 60%, PEEP 8 cmH2O")
-    >>> print(entities)
-    [{"type": "FIO2", "text": "FiO2 60%", "start": 13, "end": 21}]
-
-Configuration:
-    The model directory can be specified via constructor or defaults to:
-    ``/app/models/model/`` (container) or
-    ``services/ner-bilstm/models/model/`` (local development).
-
-Note:
-    Token encoding preserves original casing. The vocabulary contains
-    case-sensitive clinical abbreviations (e.g., "FiO2", "PaCO2", "PEEP")
-    that must not be lowercased during lookup.
-
-See Also:
-    - :mod:`app.services.pipeline` for extraction orchestration
-    - :mod:`app.services.registry` for model registration
-    - :class:`app.schemas.Entity` for output schema
+This extractor serves the BiLSTM notebook_v2 pipeline only. Legacy artifacts are
+intentionally rejected at startup through strict schema and signature checks.
 """
 
 from __future__ import annotations
@@ -76,15 +10,15 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import keras
 import numpy as np
 
 from shared.schemas import Entity
 
-# Logger configuration
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     handler = logging.StreamHandler()
@@ -94,100 +28,107 @@ if not logger.handlers:
 logger.setLevel(logging.WARNING)
 
 
-# Tokenization regex: matches words and punctuation separately
-_TOKEN_REGEX = re.compile(r"\w+|[^\w\s]", re.UNICODE)
+EXPECTED_FEATURE_SCHEMA = "notebook_v2"
+EXPECTED_TOKENIZER_SCHEMA = "regex_word_punct_v1"
+
+CAP_PAD_TOKEN = "<PAD_CAP>"
+SPECIAL_VOCAB_TOKENS = {"<PAD>", "<UNK>", "[UNK]"}
 
 
-def _join_tokens(tokens: Sequence[str]) -> str:
-    """
-    Reconstruct text from tokens with appropriate spacing.
+def _normalize_text_soft(text: str) -> str:
+    text = unicodedata.normalize("NFC", str(text))
+    text = text.replace("\u00a0", " ")
+    text = re.sub(r"[\u200B-\u200D\uFEFF]", "", text)
+    text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]", " ", text)
+    text = re.sub(r"[^\S\r\n]+", " ", text)
+    text = re.sub(r" *\n+ *", "\n", text)
+    return text.strip()
 
-    Joins tokens into a string, inserting spaces between consecutive
-    alphanumeric tokens while preserving punctuation adjacency.
 
-    Args:
-        tokens: Sequence of string tokens to join.
+def _normalize_token_soft(token: str) -> str:
+    token = unicodedata.normalize("NFC", str(token))
+    token = token.replace("\u00a0", " ")
+    token = re.sub(r"[\u200B-\u200D\uFEFF]", "", token)
+    token = re.sub(r"[\x00-\x1F\x7F-\x9F]", "", token)
+    token = re.sub(r"\s+", " ", token)
+    return token.strip()
 
-    Returns:
-        Reconstructed text string.
 
-    Example:
-        >>> _join_tokens(["FiO2", "60", "%"])
-        'FiO2 60%'
-    """
-    parts: List[str] = []
-    for i, tok in enumerate(tokens):
-        if i > 0 and tokens[i - 1].isalnum() and tok.isalnum():
-            parts.append(" ")
-        parts.append(tok)
-    return "".join(parts)
+def _normalize_lexical_token(token: str) -> str:
+    if token in SPECIAL_VOCAB_TOKENS:
+        return token
+    token = _normalize_token_soft(token)
+    return token.lower() if token else token
+
+
+def _tokenize_text(text: str) -> List[str]:
+    text = _normalize_text_soft(text)
+    tokens: List[str] = []
+    for chunk in re.split(r"(\W)", text):
+        chunk = _normalize_token_soft(chunk)
+        if chunk:
+            tokens.append(chunk)
+    return tokens
+
+
+def _compute_offsets(text: str, tokens: Sequence[str]) -> List[Tuple[int, int]]:
+    spans: List[Tuple[int, int]] = []
+    cursor = 0
+    lowered = text.lower()
+
+    for token in tokens:
+        start = text.find(token, cursor)
+        if start == -1:
+            start = lowered.find(token.lower(), cursor)
+        if start == -1:
+            start = cursor
+        end = start + len(token)
+        spans.append((start, end))
+        cursor = end
+
+    return spans
+
+
+def _get_capitalization_feature(token: str) -> str:
+    token = _normalize_token_soft(token)
+    if not token:
+        return "other"
+
+    if any(ch.isdigit() for ch in token):
+        return "has_digit"
+
+    alpha_chars = [ch for ch in token if ch.isalpha()]
+    if alpha_chars:
+        if all(ch.islower() for ch in alpha_chars):
+            return "all_lower"
+        if all(ch.isupper() for ch in alpha_chars):
+            return "all_upper"
+        if alpha_chars[0].isupper() and all(ch.islower() for ch in alpha_chars[1:]):
+            return "initial_upper"
+        return "mixed_case"
+
+    if all(not ch.isalnum() for ch in token):
+        return "punctuation"
+    return "other"
+
+
+def _join_notebook_tokens(tokens: Sequence[str]) -> str:
+    # Notebook demo builds ent.text from spaCy Doc(words=tokens), which yields
+    # token-level text rather than original text[start:end].
+    return " ".join(tokens).strip()
 
 
 class LSTMExtractor:
     """
-    BiLSTM-based clinical Named Entity Recognition extractor.
-
-    This class provides NER extraction using a pre-trained BiLSTM model
-    with BIO tagging for mechanical ventilation clinical notes.
-
-    The extractor handles the complete pipeline:
-
-    1. Text tokenization with character offset tracking
-    2. Token encoding to vocabulary IDs
-    3. Model inference for tag probabilities
-    4. BIO decoding to entity spans
-
-    Attributes:
-        model_dir: Path to the model directory containing weights and config.
-        word2idx: Vocabulary mapping from words to integer IDs.
-        tag2idx: Tag mapping from BIO tags to integer IDs.
-        idx2tag: Reverse tag mapping from IDs to BIO tags.
-        max_len: Maximum sequence length for model input.
-        pad_id: Padding token ID for sequences shorter than max_len.
-        unk_id: Unknown token ID for out-of-vocabulary words.
-        model: Loaded TensorFlow/Keras model instance.
-
-    Example:
-        >>> extractor = LSTMExtractor()
-        >>> entities = extractor.predict("PEEP 8 cmH2O, FiO2 60%")
-        >>> for e in entities:
-        ...     print(f"{e['type']}: {e['text']}")
-        PEEP: 8 cmH2O
-        FIO2: 60%
-
-    Note:
-        The model is loaded on instantiation. For lazy loading, use
-        :data:`app.services.registry.MODEL_REGISTRY` which defers
-        initialization until first use.
+    BiLSTM clinical NER extractor aligned with notebook_v2 preprocessing.
     """
 
-    TOKEN_REGEX = _TOKEN_REGEX
-    """Compiled regex for tokenization."""
-
     def __init__(self, model_dir: str | None = None) -> None:
-        """
-        Initialize the LSTM extractor with model weights and configuration.
-
-        Args:
-            model_dir: Path to model directory. If None, uses the default
-                path at ``services/ner-bilstm/models/model/``.
-
-        Raises:
-            FileNotFoundError: If the model directory does not exist.
-
-        Note:
-            Model loading may take several seconds on first instantiation.
-            The model is loaded into CPU memory by default.
-        """
         base_dir = Path(__file__).resolve().parent
 
-        # Support both container and local development paths
-        HARD_PATH = Path("/app/models/model")
-
+        hard_path = Path("/app/models/model")
         default_dir = (
-            HARD_PATH
-            if HARD_PATH.exists()
-            else (base_dir.parent / "models" / "model")
+            hard_path if hard_path.exists() else (base_dir.parent / "models" / "model")
         )
         resolved = Path(model_dir or default_dir).expanduser().resolve()
         if not resolved.exists():
@@ -195,7 +136,17 @@ class LSTMExtractor:
 
         self.model_dir = resolved
 
-        # Load vocabulary and tag mappings
+        self.config: Dict[str, Any] = json.loads(
+            (self.model_dir / "config.json").read_text(encoding="utf-8")
+        )
+        self.feature_schema = self._required_str_field("feature_schema")
+        self.tokenizer_schema = self._required_str_field("tokenizer_schema")
+        self.use_capitalization_feature = self._optional_bool_field(
+            "use_capitalization_feature",
+            default=True,
+        )
+        self._validate_schema_compatibility()
+
         self.word2idx: Dict[str, int] = json.loads(
             (self.model_dir / "word2idx.json").read_text(encoding="utf-8")
         )
@@ -203,141 +154,211 @@ class LSTMExtractor:
             (self.model_dir / "tag2idx.json").read_text(encoding="utf-8")
         )
         self.idx2tag: Dict[int, str] = {int(v): k for k, v in self.tag2idx.items()}
+        self._validate_vocab_signature()
 
-        # Load model configuration
-        cfg = json.loads((self.model_dir / "config.json").read_text(encoding="utf-8"))
-        self.max_len: int = int(cfg["max_len"])
-        self.pad_id: int = int(cfg.get("pad_id", 0))
+        self.max_len: int = int(self.config["max_len"])
+        self.pad_id: int = int(self.config.get("pad_id", self.word2idx.get("<PAD>", 0)))
         self.unk_id: int = int(
             self.word2idx.get("<UNK>", self.word2idx.get("[UNK]", 1))
         )
+        self.cap_pad_id: int = int(self.config.get("cap_pad_id", 0))
 
-        # Load model (Keras v3 format)
+        self.cap2idx: Dict[str, int] = {}
+        if self.use_capitalization_feature:
+            cap_path = self.model_dir / "cap2idx.json"
+            if not cap_path.exists():
+                raise FileNotFoundError(
+                    "Capitalization feature is enabled but cap2idx.json is missing"
+                )
+
+            self.cap2idx = json.loads(cap_path.read_text(encoding="utf-8"))
+            self._validate_cap_config()
+
         keras_path = self.model_dir / "model.keras"
         if not keras_path.exists():
-            raise FileNotFoundError(f"No Keras v3 model found at {keras_path}")
+            raise FileNotFoundError(f"No Keras model found at {keras_path}")
 
-        logger.info("Loading Keras v3 model from %s", keras_path)
-        self.model = keras.saving.load_model(keras_path.as_posix(), compile=False)
+        logger.info("Loading Keras model from %s", keras_path)
+        # Compatibility for both Keras 2.x and 3.x loaders.
+        saving_loader = getattr(getattr(keras, "saving", None), "load_model", None)
+        if callable(saving_loader):
+            self.model = saving_loader(keras_path.as_posix(), compile=False)
+        else:
+            self.model = keras.models.load_model(keras_path.as_posix(), compile=False)
+        self._validate_model_io_signature()
+
+    def _required_str_field(self, key: str) -> str:
+        value = self.config.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"Invalid model config: missing required field '{key}' with non-empty string value"
+            )
+        return value
+
+    def _optional_bool_field(self, key: str, default: bool) -> bool:
+        value = self.config.get(key)
+        if value is None:
+            return default
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"Invalid model config: field '{key}' must be boolean when present"
+            )
+        return value
+
+    def _validate_schema_compatibility(self) -> None:
+        if self.feature_schema != EXPECTED_FEATURE_SCHEMA:
+            raise ValueError(
+                "Unsupported feature schema in model config. "
+                f"Expected '{EXPECTED_FEATURE_SCHEMA}', got '{self.feature_schema}'"
+            )
+        if self.tokenizer_schema != EXPECTED_TOKENIZER_SCHEMA:
+            raise ValueError(
+                "Unsupported tokenizer schema in model config. "
+                f"Expected '{EXPECTED_TOKENIZER_SCHEMA}', got '{self.tokenizer_schema}'"
+            )
+
+    def _validate_vocab_signature(self) -> None:
+        uppercase_examples: List[str] = []
+        for token in self.word2idx.keys():
+            if token in SPECIAL_VOCAB_TOKENS:
+                continue
+            if any(ch.isalpha() and ch.isupper() for ch in token):
+                uppercase_examples.append(token)
+                if len(uppercase_examples) >= 5:
+                    break
+
+        if uppercase_examples:
+            raise ValueError(
+                "Model vocabulary signature mismatch for notebook_v2: expected lowercase "
+                "lexical vocabulary built by normalize_lexical_token(). "
+                f"Found uppercase tokens, examples={uppercase_examples}"
+            )
+
+    def _validate_cap_config(self) -> None:
+        required_keys = {
+            CAP_PAD_TOKEN,
+            "all_lower",
+            "all_upper",
+            "initial_upper",
+            "mixed_case",
+            "has_digit",
+            "punctuation",
+            "other",
+        }
+        missing = sorted(k for k in required_keys if k not in self.cap2idx)
+        if missing:
+            raise ValueError(
+                "Invalid cap2idx.json for notebook_v2. Missing capitalization keys: "
+                f"{missing}"
+            )
+
+        cap_pad_id = int(self.cap2idx[CAP_PAD_TOKEN])
+        cfg_cap_pad = self.config.get("cap_pad_id")
+        if cfg_cap_pad is not None and int(cfg_cap_pad) != cap_pad_id:
+            raise ValueError(
+                "Invalid config: cap_pad_id does not match cap2idx['<PAD_CAP>']"
+            )
+        self.cap_pad_id = cap_pad_id
+
+    def _model_input_names(self) -> List[str]:
+        names: List[str] = []
+        for tensor in self.model.inputs:
+            raw_name = str(getattr(tensor, "name", "")).split(":")[0]
+            names.append(raw_name.split("/")[-1])
+        return names
+
+    def _validate_model_io_signature(self) -> None:
+        input_names = self._model_input_names()
+        expected = {"tokens", "caps"} if self.use_capitalization_feature else {"tokens"}
+        if set(input_names) != expected or len(input_names) != len(expected):
+            raise ValueError(
+                "Model input signature mismatch. "
+                f"Expected inputs={sorted(expected)}, got={sorted(input_names)}"
+            )
+
+        tokens = np.full((1, self.max_len), self.pad_id, dtype=np.int32)
+        if self.use_capitalization_feature:
+            caps = np.full((1, self.max_len), self.cap_pad_id, dtype=np.int32)
+            X: Any = {"tokens": tokens, "caps": caps}
+        else:
+            X = tokens
+
+        output = np.asarray(self.model.predict(X, verbose=0))
+        if output.ndim != 3:
+            raise ValueError(
+                "Model output signature mismatch. Expected shape (batch, max_len, n_tags), "
+                f"got ndim={output.ndim} shape={tuple(output.shape)}"
+            )
+        if output.shape[1] != self.max_len:
+            raise ValueError(
+                "Model output sequence length mismatch. "
+                f"Expected max_len={self.max_len}, got={output.shape[1]}"
+            )
 
     def _tokenize(self, text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
-        """
-        Tokenize text and compute character spans for each token.
-
-        Uses regex-based tokenization that separates words and punctuation,
-        preserving character offsets for entity span reconstruction.
-
-        Args:
-            text: Input text to tokenize.
-
-        Returns:
-            Tuple of (tokens, spans) where:
-            - tokens: List of token strings
-            - spans: List of (start, end) character offset tuples
-
-        Example:
-            >>> extractor._tokenize("FiO2 60%")
-            (['FiO2', '60', '%'], [(0, 4), (5, 7), (7, 8)])
-        """
-        tokens: List[str] = []
-        spans: List[Tuple[int, int]] = []
-        for m in self.TOKEN_REGEX.finditer(text):
-            tokens.append(m.group(0))
-            spans.append((m.start(), m.end()))
+        tokens = _tokenize_text(text)
+        spans = _compute_offsets(text, tokens)
         return tokens, spans
 
-    def _encode(self, tokens: Sequence[str]) -> np.ndarray:
-        """
-        Encode tokens to vocabulary IDs with padding/truncation.
+    @staticmethod
+    def _pad(ids: List[int], max_len: int, pad_value: int) -> List[int]:
+        if len(ids) < max_len:
+            return ids + [pad_value] * (max_len - len(ids))
+        return ids[:max_len]
 
-        Converts token strings to integer IDs using the vocabulary mapping.
-        Applies padding for short sequences and truncation for long ones.
+    def _encode_tokens(self, tokens: Sequence[str]) -> np.ndarray:
+        token_ids = [
+            self.word2idx.get(_normalize_lexical_token(token), self.unk_id)
+            for token in tokens
+        ]
+        token_ids = self._pad(token_ids, self.max_len, self.pad_id)
+        return np.asarray([token_ids], dtype=np.int32)
 
-        Args:
-            tokens: Sequence of token strings.
+    def _encode_caps(self, tokens: Sequence[str]) -> np.ndarray:
+        cap_ids = [
+            int(self.cap2idx.get(_get_capitalization_feature(token), self.cap_pad_id))
+            for token in tokens
+        ]
+        cap_ids = self._pad(cap_ids, self.max_len, self.cap_pad_id)
+        return np.asarray([cap_ids], dtype=np.int32)
 
-        Returns:
-            NumPy array of shape (1, max_len) with token IDs.
+    def _build_model_inputs(self, tokens: Sequence[str]) -> Any:
+        token_inputs = self._encode_tokens(tokens)
+        if not self.use_capitalization_feature:
+            return token_inputs
+        cap_inputs = self._encode_caps(tokens)
+        return {"tokens": token_inputs, "caps": cap_inputs}
 
-        Note:
-            Out-of-vocabulary tokens are mapped to the UNK token ID.
-            Tokens are looked up in their original casing (case-sensitive).
-        """
-        ids = [self.word2idx.get(t, self.unk_id) for t in tokens]
-        if len(ids) < self.max_len:
-            ids = ids + [self.pad_id] * (self.max_len - len(ids))
-        else:
-            ids = ids[: self.max_len]
-        return np.asarray([ids], dtype=np.int32)
-
-    def _predict_proba(self, X: np.ndarray) -> Tuple[np.ndarray, bool]:
-        """
-        Compute tag probabilities or decoded IDs for encoded input.
-
-        Runs model inference. For regular BiLSTM models, returns probability
-        distributions. For CRF models, returns already-decoded tag IDs.
-
-        Args:
-            X: Encoded input array of shape (1, max_len).
-
-        Returns:
-            Tuple of (output, is_crf) where:
-            - output: Either probabilities (max_len, num_tags) or decoded IDs (max_len,)
-            - is_crf: Boolean indicating if model has CRF layer
-        """
-        output = self.model.predict(X, verbose=0)[0]
-
-        # Detect CRF-like decoded output: shape (max_len,) instead of (max_len, num_tags)
-        is_crf = len(output.shape) == 1
-        return output, is_crf
+    def _predict_logits(self, X: Any) -> np.ndarray:
+        output = np.asarray(self.model.predict(X, verbose=0))
+        if output.ndim != 3:
+            raise ValueError(
+                f"Unexpected BiLSTM output shape: {tuple(output.shape)}. Expected 3 dimensions."
+            )
+        return output[0]
 
     def _bio_decode(
         self,
         tags: Sequence[str],
         tokens: Sequence[str],
         spans: Sequence[Tuple[int, int]],
-        probs: np.ndarray,
     ) -> List[Entity]:
-        """
-        Convert BIO tag sequence to entity spans.
-
-        Implements BIO decoding logic to merge consecutive B-/I- tags
-        into entity spans.
-
-        Args:
-            tags: Sequence of predicted BIO tags.
-            tokens: Original token strings.
-            spans: Character offset spans for each token.
-            probs: Tag probability matrix (unused, kept for compatibility).
-
-        Returns:
-            List of Entity objects with type, text, and span offsets.
-
-        Algorithm:
-            1. Scan for B-{TYPE} tags to start new entities
-            2. Extend with consecutive I-{TYPE} tags
-            3. Reconstruct text from token spans
-        """
         ents: List[Entity] = []
         i = 0
-        T = len(tokens)
+        T = len(spans)
 
         def _collect_run(start_idx: int, ent_type: str) -> Tuple[int, int]:
-            """Find the extent of consecutive I-tags for an entity."""
             j = start_idx + 1
             while j < T and tags[j] == f"I-{ent_type}":
                 j += 1
             return start_idx, j
 
         def _span_entity(i0: int, j0: int, ent_type: str) -> Entity:
-            """Construct an Entity from token range."""
             start_char = spans[i0][0]
             end_char = spans[min(j0 - 1, T - 1)][1]
-            text_str = _join_tokens(tokens[i0:j0])
-
             return Entity(
                 type=ent_type,
-                text=text_str,
+                text=_join_notebook_tokens(tokens[i0:j0]),
                 start=int(start_char),
                 end=int(end_char),
             )
@@ -356,7 +377,6 @@ class LSTMExtractor:
                 continue
 
             if tag.startswith("I-"):
-                # Handle orphan I-tags (rare edge case)
                 ent_type = tag[2:]
                 i0, j0 = _collect_run(i, ent_type)
                 ents.append(_span_entity(i0, j0, ent_type))
@@ -368,78 +388,33 @@ class LSTMExtractor:
         return ents
 
     def predict(self, text: str) -> List[Dict]:
-        """
-        Extract clinical entities from text.
+        if not text:
+            return []
 
-        Main entry point for entity extraction. Processes the input text
-        through tokenization, encoding, inference, and BIO decoding.
-
-        Supports both regular BiLSTM models (with logits) and BiLSTM-CRF
-        models (with Viterbi-decoded output).
-
-        Args:
-            text: Clinical note text to process.
-
-        Returns:
-            List of entity dictionaries with keys:
-
-            - ``type``: Entity type (e.g., "FIO2", "PEEP", "DX")
-            - ``text``: Extracted text span
-            - ``start``: Character offset start position
-            - ``end``: Character offset end position
-
-        Example:
-            >>> extractor = LSTMExtractor()
-            >>> entities = extractor.predict("FiO2 60%, PEEP 8")
-            >>> entities[0]
-            {'type': 'FIO2', 'text': 'FiO2 60%', 'start': 0, 'end': 8}
-        """
         tokens, spans = self._tokenize(text)
-        X = self._encode(tokens)
+        if not tokens:
+            return []
 
-        output, is_crf = self._predict_proba(X)
-        real_T = min(len(tokens), self.max_len)
+        X = self._build_model_inputs(tokens)
+        logits = self._predict_logits(X)
+        real_T = min(len(tokens), self.max_len, logits.shape[0])
 
-        if is_crf:
-            # CRF output: already decoded tag IDs (shape: max_len)
-            output = output[:real_T]
-            pred_ids = output.astype(int).tolist()
-            pred_tags = [self.idx2tag.get(i, "O") for i in pred_ids]
+        probs = logits[:real_T, :]
+        pred_ids = probs.argmax(axis=-1).astype(int).tolist()
+        pred_tags = [self.idx2tag.get(i, "O") for i in pred_ids]
 
-            # Create dummy probability matrix for confidence scoring
-            # CRF gives best path, so we use 1.0 for selected tags
-            num_tags = len(self.tag2idx)
-            probs = np.zeros((real_T, num_tags), dtype=np.float32)
-            for i, tag_id in enumerate(pred_ids):
-                if 0 <= tag_id < num_tags:
-                    probs[i, tag_id] = 1.0
-        else:
-            # Regular BiLSTM: logits/probabilities (shape: max_len, num_tags)
-            probs = output[:real_T, :]
-            pred_ids = probs.argmax(axis=-1).astype(int).tolist()
-            pred_tags = [self.idx2tag.get(i, "O") for i in pred_ids]
-
-        entities = self._bio_decode(pred_tags, tokens[:real_T], spans[:real_T], probs)
+        entities = self._bio_decode(pred_tags, tokens[:real_T], spans[:real_T])
 
         return [ent.model_dump() for ent in entities]
 
     def meta(self) -> Dict:
-        """
-        Return extractor metadata for logging and debugging.
-
-        Returns:
-            Dictionary containing:
-
-            - ``extractor``: Model type identifier ("lstm")
-            - ``model_dir``: Path to model files
-            - ``vocab_size``: Number of words in vocabulary
-            - ``num_tags``: Number of BIO tags
-            - ``max_len``: Maximum sequence length
-        """
         return {
             "extractor": "lstm",
             "model_dir": str(self.model_dir),
             "vocab_size": len(self.word2idx),
             "num_tags": len(self.tag2idx),
             "max_len": self.max_len,
+            "feature_schema": self.feature_schema,
+            "tokenizer_schema": self.tokenizer_schema,
+            "use_capitalization_feature": self.use_capitalization_feature,
         }

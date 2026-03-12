@@ -100,9 +100,7 @@ class ExtractionService:
             try:
                 return datetime.fromisoformat(s + "T00:00:00")
             except Exception:
-                raise HTTPException(
-                    status_code=400, detail="Invalid note_date format"
-                )
+                raise HTTPException(status_code=400, detail="Invalid note_date format")
 
     async def _extract_from_text(self, *args, **kwargs):
         """

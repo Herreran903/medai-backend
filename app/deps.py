@@ -188,12 +188,12 @@ def get_episode_repository(db: Database = Depends(get_db)):
         EpisodeRepository: Repository instance for episode/note operations.
 
     Example:
-        >>> @router.get("/episodes/{episode_id}")
-        >>> async def get_episode(
-        ...     episode_id: str,
+        >>> @router.get("/notes/{note_id}")
+        >>> async def get_note(
+        ...     note_id: str,
         ...     repo: EpisodeRepository = Depends(get_episode_repository)
         ... ):
-        ...     return await repo.get_episode(episode_id)
+        ...     return await repo.find_note_by_id(note_id)
 
     Note:
         A new repository instance is created per request, but it shares

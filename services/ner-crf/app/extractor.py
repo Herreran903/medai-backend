@@ -3,13 +3,7 @@ CRF-Based Named Entity Recognition for Clinical Text.
 
 This module implements inference for a pre-trained sklearn-crfsuite model
 using BIO tagging. It mirrors the MedAI NER output contract (entity spans with
-character offsets).
-
-Model Input:
-    The CRF expects a sequence of per-token feature dictionaries.
-    Tokenization uses a regex aligned with the BiLSTM extractor:
-    - Words and punctuation are separated
-    - Character offsets are preserved for span reconstruction
+character offsets) and enforces strict compatibility with notebook_v2 features.
 """
 
 from __future__ import annotations
@@ -19,7 +13,7 @@ import logging
 import pickle
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 try:
     import joblib
@@ -29,8 +23,32 @@ except Exception:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-# Tokenization regex: matches words and punctuation separately
+EXPECTED_FEATURE_SCHEMA = "notebook_v2"
+EXPECTED_TOKENIZER_SCHEMA = "regex_word_punct_v1"
+_NOTEBOOK_V2_SIGNATURE_PREFIX = "shape.compact:"
+
+# Equivalent token sequence to notebook's re.split(r"(\\W)") with empty filtering,
+# but preserves exact character offsets via finditer for entity span reconstruction.
 _TOKEN_REGEX = re.compile(r"\w+|[^\w\s]", re.UNICODE)
+
+UNIT_ANCHORS = {
+    "pressure": {"mmhg", "cmh2o", "cmh20"},
+    "volume": {"ml", "cc", "l", "lt", "lts", "litro", "litros", "ml/kg", "mlkg"},
+    "saturation": {"%", "porcentaje", "sat", "spo2", "sao2"},
+    "oxygen_fraction": {"fio2"},
+    "resp_rate": {"rpm", "resp/min", "/min", "min-1"},
+    "heart_rate": {"lpm", "bpm", "lat/min"},
+    "temperature": {"oc", "co", "grados", "celsius"},
+    "chemistry": {"mmol/l", "meq/l", "mg/dl", "g/dl"},
+    "weight": {"kg", "kgs", "kilo", "kilos"},
+    "height": {"cm", "mts", "metro", "metros"},
+}
+
+_NUMERIC_RE = re.compile(r"^[+-]?\d+(?:[\.,]\d+)?$")
+_DECIMAL_RE = re.compile(r"^[+-]?\d+[\.,]\d+$")
+_BP_RATIO_RE = re.compile(r"^\d{2,3}/\d{2,3}$")
+_IE_RATIO_RE = re.compile(r"^\d+(?:[\.,]\d+)?:\d+(?:[\.,]\d+)?$")
+_PERCENT_RE = re.compile(r"^[+-]?\d+(?:[\.,]\d+)?%$")
 
 
 def _tokenize(text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
@@ -42,30 +60,102 @@ def _tokenize(text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
     return tokens, spans
 
 
-def _has_any(it: Iterable[bool]) -> bool:
-    return any(bool(v) for v in it)
+def _normalize_token(token: str) -> str:
+    token = token.lower().strip()
+    token = token.replace("²", "2").replace("°", "o")
+    token = token.strip(".,;()[]{}")
+    return token
 
 
-def _has_upper(s: str) -> bool:
-    return _has_any(c.isupper() for c in s)
+def _word_shape(token: str) -> str:
+    tags = []
+    for ch in token:
+        if ch.isdigit():
+            t = "d"
+        elif ch.isupper():
+            t = "X"
+        elif ch.islower():
+            t = "x"
+        elif ch in "/:.,%+-":
+            t = ch
+        else:
+            t = "o"
+        if not tags or tags[-1] != t:
+            tags.append(t)
+    return "".join(tags)[:24]
 
 
-def _has_lower(s: str) -> bool:
-    return _has_any(c.islower() for c in s)
+def _classify_anchor_unit(token: str) -> Optional[str]:
+    tok = _normalize_token(token)
+
+    for category, vocab in UNIT_ANCHORS.items():
+        if tok in vocab:
+            return category
+
+    if re.fullmatch(r"(mmhg|cmh2o|cmh20)", tok):
+        return "pressure"
+    if re.fullmatch(r"(ml|min|l|min|ml/h|l/h)", tok):
+        return "volume"
+    if tok == "%" or tok.endswith("%"):
+        return "saturation"
+    if re.fullmatch(r"(rpm|bpm|lpm)", tok):
+        return "resp_rate"
+    if _IE_RATIO_RE.fullmatch(tok):
+        return "ratio_ie"
+
+    return None
 
 
-def _has_digit(s: str) -> bool:
-    return _has_any(c.isdigit() for c in s)
+def _scan_next_anchors(
+    sent: Sequence[str], i: int, max_offset: int = 3
+) -> Tuple[Dict[str, bool], Optional[str], Optional[int]]:
+    categories = {
+        "pressure": False,
+        "volume": False,
+        "saturation": False,
+        "oxygen_fraction": False,
+        "resp_rate": False,
+        "heart_rate": False,
+        "temperature": False,
+        "chemistry": False,
+        "weight": False,
+        "height": False,
+        "ratio_ie": False,
+    }
+
+    first_unit = None
+    first_distance = None
+
+    for offset in range(1, max_offset + 1):
+        j = i + offset
+        if j >= len(sent):
+            break
+        unit_cat = _classify_anchor_unit(sent[j])
+        if unit_cat is None:
+            continue
+
+        categories[unit_cat] = True
+        if first_unit is None:
+            first_unit = _normalize_token(sent[j])
+            first_distance = offset
+
+    return categories, first_unit, first_distance
 
 
-def _word_features(word: str) -> Dict[str, Any]:
-    """
-    Feature set aligned with the training-time schema embedded in the pickled model.
+def _token2features(tokens: Sequence[str], i: int) -> Dict[str, Any]:
+    word = tokens[i]
+    word_norm = _normalize_token(word)
 
-    Note:
-        String-valued features become `key:value` attributes internally (CRFsuite).
-    """
-    return {
+    is_numeric_candidate = (
+        bool(_NUMERIC_RE.fullmatch(word_norm))
+        or bool(_BP_RATIO_RE.fullmatch(word_norm))
+        or bool(_IE_RATIO_RE.fullmatch(word_norm))
+        or bool(_PERCENT_RE.fullmatch(word_norm))
+        or any(c.isdigit() for c in word)
+    )
+
+    features: Dict[str, Any] = {
+        "bias": 1.0,
         "word.lower()": word.lower(),
         "word[-3:]": word[-3:],
         "word[-2:]": word[-2:],
@@ -78,36 +168,100 @@ def _word_features(word: str) -> Dict[str, Any]:
         "word.isalnum()": word.isalnum(),
         "word.len": len(word),
         "word.has_hyphen": "-" in word,
-        "word.has_digit": _has_digit(word),
-        "word.has_upper": _has_upper(word),
-        "word.all_caps": word.isupper(),
-        "word.mixed_case": _has_upper(word) and _has_lower(word),
+        "word.has_digit": any(c.isdigit() for c in word),
+        "word.has_upper": any(c.isupper() for c in word),
+        "word.all_caps": word.isupper() and len(word) > 1,
+        "word.mixed_case": (
+            not word.islower() and not word.isupper() and word.isalpha()
+        ),
+        "shape.compact": _word_shape(word),
+        "shape.has_slash": "/" in word,
+        "shape.has_colon": ":" in word,
+        "shape.has_dot": "." in word,
+        "shape.has_comma": "," in word,
+        "shape.has_decimal_sep": bool(re.search(r"\d[\.,]\d", word)),
+        "shape.bp_ratio_like": bool(_BP_RATIO_RE.fullmatch(word_norm)),
+        "shape.ie_ratio_like": bool(_IE_RATIO_RE.fullmatch(word_norm)),
+        "shape.percent_like": bool(_PERCENT_RE.fullmatch(word_norm)),
+        "num.is_candidate": is_numeric_candidate,
+        "num.is_decimal": bool(_DECIMAL_RE.fullmatch(word_norm)),
     }
 
-
-def _token2features(tokens: Sequence[str], i: int) -> Dict[str, Any]:
-    """
-    Build CRF features for token at position i.
-
-    Uses a 2-token context window (-2, -1, +1, +2) and BOS/EOS markers.
-    """
-    word = tokens[i]
-    features: Dict[str, Any] = {"bias": 1.0}
-    features.update(_word_features(word))
-
-    if i == 0:
+    if i > 0:
+        word1 = tokens[i - 1]
+        features.update(
+            {
+                "-1:word.lower()": word1.lower(),
+                "-1:word.istitle()": word1.istitle(),
+                "-1:word.isupper()": word1.isupper(),
+                "-1:word.isdigit()": word1.isdigit(),
+                "-1:word[-3:]": word1[-3:],
+                "-1:word[-2:]": word1[-2:],
+            }
+        )
+    else:
         features["BOS"] = True
-    if i == len(tokens) - 1:
+
+    if i > 1:
+        word2 = tokens[i - 2]
+        features.update(
+            {
+                "-2:word.lower()": word2.lower(),
+                "-2:word.istitle()": word2.istitle(),
+                "-2:word.isupper()": word2.isupper(),
+            }
+        )
+
+    if i < len(tokens) - 1:
+        word1 = tokens[i + 1]
+        features.update(
+            {
+                "+1:word.lower()": word1.lower(),
+                "+1:word.istitle()": word1.istitle(),
+                "+1:word.isupper()": word1.isupper(),
+                "+1:word.isdigit()": word1.isdigit(),
+                "+1:word[-3:]": word1[-3:],
+                "+1:word[-2:]": word1[-2:],
+            }
+        )
+    else:
         features["EOS"] = True
 
-    for offset in (-2, -1, 1, 2):
-        j = i + offset
-        if not (0 <= j < len(tokens)):
-            continue
-        wj = tokens[j]
-        sign = f"{offset:+d}"
-        for k, v in _word_features(wj).items():
-            features[f"{sign}:{k}"] = v
+    if i < len(tokens) - 2:
+        word2 = tokens[i + 2]
+        features.update(
+            {
+                "+2:word.lower()": word2.lower(),
+                "+2:word.istitle()": word2.istitle(),
+                "+2:word.isupper()": word2.isupper(),
+            }
+        )
+
+    if is_numeric_candidate:
+        anchor_flags, anchor_unit, anchor_distance = _scan_next_anchors(
+            tokens, i, max_offset=3
+        )
+        features.update(
+            {
+                "num.anchor.any_next": any(anchor_flags.values()),
+                "num.anchor.next.pressure": anchor_flags["pressure"],
+                "num.anchor.next.volume": anchor_flags["volume"],
+                "num.anchor.next.saturation": anchor_flags["saturation"],
+                "num.anchor.next.oxygen_fraction": anchor_flags["oxygen_fraction"],
+                "num.anchor.next.resp_rate": anchor_flags["resp_rate"],
+                "num.anchor.next.heart_rate": anchor_flags["heart_rate"],
+                "num.anchor.next.temperature": anchor_flags["temperature"],
+                "num.anchor.next.chemistry": anchor_flags["chemistry"],
+                "num.anchor.next.weight": anchor_flags["weight"],
+                "num.anchor.next.height": anchor_flags["height"],
+                "num.anchor.next.ratio_ie": anchor_flags["ratio_ie"],
+                "num.anchor.next.unit": anchor_unit if anchor_unit else "__NONE__",
+                "num.anchor.next.d1": anchor_distance == 1,
+                "num.anchor.next.d2": anchor_distance == 2,
+                "num.anchor.next.d3": anchor_distance == 3,
+            }
+        )
+
     return features
 
 
@@ -123,9 +277,6 @@ def _bio_to_entities(
     tags: Sequence[str],
     spans: Sequence[Tuple[int, int]],
 ) -> List[Dict[str, Any]]:
-    """
-    Convert BIO tag sequence to entity spans.
-    """
     out: List[Dict[str, Any]] = []
     i = 0
     T = min(len(tags), len(spans))
@@ -164,14 +315,16 @@ class CRFExtractor:
     """
     sklearn-crfsuite CRF extractor for clinical NER.
 
-    Loads a pre-trained CRF model from a pickle file and runs inference over
-    regex-tokenized text, returning entity spans aligned to the original input.
+    It validates that model artifacts match the supported feature/tokenizer
+    schemas before serving inference requests.
     """
 
     def __init__(self, model_dir: str | None = None) -> None:
         base_dir = Path(__file__).resolve().parent
         hard_path = Path("/app/models/model")
-        default_dir = hard_path if hard_path.exists() else (base_dir.parent / "models" / "model")
+        default_dir = (
+            hard_path if hard_path.exists() else (base_dir.parent / "models" / "model")
+        )
         resolved = Path(model_dir or default_dir).expanduser().resolve()
         if not resolved.exists():
             raise FileNotFoundError(f"Model directory not found: {resolved}")
@@ -179,7 +332,6 @@ class CRFExtractor:
         self.model_dir = resolved
 
         cfg_path = self.model_dir / "config.json"
-        tag2idx_path = self.model_dir / "tag2idx.json"
         model_path = self.model_dir / "crf_model.pkl"
 
         if cfg_path.exists():
@@ -187,12 +339,9 @@ class CRFExtractor:
         else:
             self.config = {}
 
-        if tag2idx_path.exists():
-            self.tag2idx: Dict[str, int] = json.loads(
-                tag2idx_path.read_text(encoding="utf-8")
-            )
-        else:
-            self.tag2idx = {}
+        self.feature_schema = self._required_schema_field("feature_schema")
+        self.tokenizer_schema = self._required_schema_field("tokenizer_schema")
+        self._validate_schema_compatibility()
 
         if not model_path.exists():
             raise FileNotFoundError(f"CRF model file not found: {model_path}")
@@ -204,6 +353,49 @@ class CRFExtractor:
                 "Loaded object does not implement predict(). "
                 "Expected a sklearn-crfsuite CRF estimator."
             )
+
+        self._validate_model_signature(self.model)
+
+    def _required_schema_field(self, key: str) -> str:
+        value = self.config.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"Invalid model config: missing required field '{key}' with non-empty string value"
+            )
+        return value
+
+    def _validate_schema_compatibility(self) -> None:
+        if self.feature_schema != EXPECTED_FEATURE_SCHEMA:
+            raise ValueError(
+                "Unsupported feature schema in model config. "
+                f"Expected '{EXPECTED_FEATURE_SCHEMA}', got '{self.feature_schema}'"
+            )
+        if self.tokenizer_schema != EXPECTED_TOKENIZER_SCHEMA:
+            raise ValueError(
+                "Unsupported tokenizer schema in model config. "
+                f"Expected '{EXPECTED_TOKENIZER_SCHEMA}', got '{self.tokenizer_schema}'"
+            )
+
+    @staticmethod
+    def _validate_model_signature(model: Any) -> None:
+        state_features = getattr(model, "state_features_", None)
+        if state_features is None or not hasattr(state_features, "keys"):
+            raise ValueError(
+                "Loaded model does not expose state_features_ required for schema validation"
+            )
+
+        for key in state_features.keys():
+            if not isinstance(key, tuple) or not key:
+                continue
+            attr = key[0]
+            if isinstance(attr, str) and attr.startswith(_NOTEBOOK_V2_SIGNATURE_PREFIX):
+                return
+
+        raise ValueError(
+            "Model artifact signature mismatch for feature schema "
+            f"'{EXPECTED_FEATURE_SCHEMA}': expected CRFsuite attributes with prefix "
+            f"'{_NOTEBOOK_V2_SIGNATURE_PREFIX}'"
+        )
 
     @staticmethod
     def _load_pickle(path: Path):
@@ -241,5 +433,6 @@ class CRFExtractor:
             "extractor": "crf",
             "model_dir": str(self.model_dir),
             "n_tags": self.config.get("n_tags"),
+            "feature_schema": self.feature_schema,
+            "tokenizer_schema": self.tokenizer_schema,
         }
-

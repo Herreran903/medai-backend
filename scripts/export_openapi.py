@@ -259,7 +259,7 @@ def main() -> int:
     if gateway_schema_path.exists():
         legacy_path = repo_root / "openapi.json"
         legacy_path.write_text(gateway_schema_path.read_text(), encoding="utf-8")
-        print(f"\n✓ Legacy openapi.json created (gateway schema copy)")
+        print("\n✓ Legacy openapi.json created (gateway schema copy)")
 
     print(f"\n✓ Exported {len(exported_paths)}/{len(services)} schemas successfully")
     return 0

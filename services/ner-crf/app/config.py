@@ -52,4 +52,3 @@ def get_settings() -> Settings:
         Settings: Singleton settings instance loaded from environment.
     """
     return Settings()
-

@@ -3,7 +3,7 @@
 Clinical Named Entity Recognition (NER) API for extracting medical entities from mechanical ventilation clinical notes.
 
 [![Documentation](https://img.shields.io/badge/docs-Docusaurus-blue)](https://herreran903.github.io/docs-medai/)
-[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -26,19 +26,14 @@ MedAI Backend is a production-grade REST API service that provides clinical Name
 The backend uses a microservices architecture where each NER model runs in an independent container, providing better isolation, faster startup times, and independent scaling capabilities.
 
 ```
-                    ┌─────────────────────┐
-                    │     API Gateway     │
-                    │     Port: 8000      │
-                    │     Size: ~200MB    │
-                    └──────────┬──────────┘
-                               │
-        ┌──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐
-        ▼              ▼              ▼              ▼              ▼
-┌───────────────┐┌───────────────┐┌───────────────┐┌───────────────┐┌───────────────┐
-│ Transformer   ││    BiLSTM     ││  BiLSTM-CRF   ││      CRF      ││      LLM      │
-│ Port: 8001    ││ Port: 8002    ││ Port: 8005    ││ Port: 8004    ││ Port: 8003    │
-│ RoBERTa       ││ no CRF layer  ││ Viterbi       ││ sklearn-crfsuite ││ GPT-only      │
-└───────────────┘└───────────────┘└───────────────┘└───────────────┘└───────────────┘
+API Gateway (8000)
+  -> Transformer service (8001, RoBERTa)
+  -> BiLSTM service (8002, no CRF)
+  -> LLM service (8003, GPT-only)
+  -> CRF service (8004, sklearn-crfsuite)
+  -> BiLSTM-CRF service (8005, Viterbi)
+
+MongoDB (27017) stores extracted notes and metadata.
 ```
 
 ### Services
@@ -55,7 +50,7 @@ The backend uses a microservices architecture where each NER model runs in an in
 
 ### Microservices Benefits
 
-- **Lightweight Gateway**: 94% reduction in size (3.5GB → 200MB)
+- **Lightweight Gateway**: 94% reduction in size (3.5GB -> 200MB)
 - **Fast Startup**: Gateway ready in <2s vs 10-15s for monolith
 - **Isolated Dependencies**: PyTorch, TensorFlow, and LLM SDKs in separate containers
 - **No Version Conflicts**: Each model can use different library versions
@@ -68,7 +63,7 @@ The backend uses a microservices architecture where each NER model runs in an in
 
 ```bash
 # Start all microservices
-docker-compose -f docker-compose.dev.yml up --build
+docker compose -f docker-compose.dev.yml up -d --build
 
 # Verify services are ready (wait 30-60s for models to load)
 curl http://localhost:8000/health
@@ -82,7 +77,7 @@ cp .env.prod .env.prod.local
 # Edit .env.prod.local with your MongoDB URI and API keys
 
 # Start services
-docker-compose -f docker-compose.prod.yml up --build
+docker compose --env-file .env.prod.local -f docker-compose.prod.yml up --build
 ```
 
 ### Testing
@@ -175,7 +170,7 @@ MedAI recognizes clinical entities specific to mechanical ventilation notes:
 ### Vital Signs
 | Entity | Description | Example |
 |--------|-------------|---------|
-| `TEMP` | Body temperature | 38.5°C |
+| `TEMP` | Body temperature | 38.5 C |
 | `PA` | Blood pressure | 120/80 mmHg |
 | `PAS` | Systolic blood pressure | 120 mmHg |
 | `PAD` | Diastolic blood pressure | 80 mmHg |
@@ -204,14 +199,14 @@ MedAI recognizes clinical entities specific to mechanical ventilation notes:
 ### Anthropometry
 | Entity | Description | Example |
 |--------|-------------|---------|
-| `EDAD` | Age | 65 años |
+| `EDAD` | Age | 65 anos |
 | `PESO` | Weight | 75 kg |
 | `TALLA` | Height | 1.70 m |
 
 ### Clinical
 | Entity | Description | Example |
 |--------|-------------|---------|
-| `DX` | Diagnosis | Neumonía adquirida en comunidad |
+| `DX` | Diagnosis | Neumonia adquirida en comunidad |
 | `POSTURA` | Patient position | Prono |
 
 ## Configuration
@@ -342,6 +337,20 @@ curl -X POST "http://localhost:8000/extract" \
   -F "episode_id=EP-001" \
   -F "note_date=2024-01-15T10:30:00"
 ```
+
+```bash
+# Model matrix smoke test (gateway -> all microservices)
+for model in transformer lstm lstm_crf crf llm; do
+  variant=""
+  if [ "$model" = "transformer" ]; then variant="-F model_variant=roberta"; fi
+  if [ "$model" = "llm" ]; then variant="-F model_variant=gpt"; fi
+  curl -X POST "http://localhost:8000/extract" \
+    -F "text=Paciente en modo AC, FiO2 45%, PEEP 8 cmH2O, FC 92 lpm" \
+    -F "model=$model" $variant \
+    -F "episode_id=EP-SMOKE-$model" \
+    -F "note_date=2024-01-15T10:30:00"
+done
+```
 - All models (CRF, BiLSTM, BiLSTM-CRF, Transformer RoBERTa, LLM GPT)
 - Document processing (PDF/DOCX/TXT)
 - Result retrieval
@@ -352,7 +361,7 @@ curl -X POST "http://localhost:8000/extract" \
 ### Development (Local MongoDB)
 
 ```bash
-docker-compose -f docker-compose.dev.yml up --build
+docker compose -f docker-compose.dev.yml up --build
 ```
 
 This configuration:
@@ -363,10 +372,12 @@ This configuration:
 ### Production (MongoDB Atlas)
 
 ```bash
-# Configure MONGODB_URI in .env.prod.
+# Configure environment variables first
+cp .env.prod .env.prod.local
+# Edit .env.prod.local with your MongoDB URI and API keys
 # Requires local Cloudflare credentials in ~/.cloudflared/config.yml
 # and an existing named tunnel: medai-backend.
-docker-compose -f docker-compose.prod.yml up --build
+docker compose --env-file .env.prod.local -f docker-compose.prod.yml up --build
 ```
 
 ### Secure Exposure with Cloudflare Tunnel
@@ -386,15 +397,15 @@ curl https://medai.your-domain.com/health
 
 ```bash
 # All services
-docker-compose -f docker-compose.dev.yml logs -f
+docker compose -f docker-compose.dev.yml logs -f
 
 # Specific service
-docker-compose -f docker-compose.dev.yml logs -f gateway
-docker-compose -f docker-compose.dev.yml logs -f ner-transformer
-docker-compose -f docker-compose.dev.yml logs -f ner-bilstm
-docker-compose -f docker-compose.dev.yml logs -f ner-bilstm-crf
-docker-compose -f docker-compose.dev.yml logs -f ner-crf
-docker-compose -f docker-compose.dev.yml logs -f ner-llm
+docker compose -f docker-compose.dev.yml logs -f gateway
+docker compose -f docker-compose.dev.yml logs -f ner-transformer
+docker compose -f docker-compose.dev.yml logs -f ner-bilstm
+docker compose -f docker-compose.dev.yml logs -f ner-bilstm-crf
+docker compose -f docker-compose.dev.yml logs -f ner-crf
+docker compose -f docker-compose.dev.yml logs -f ner-llm
 ```
 
 ### Health Checks
@@ -405,15 +416,15 @@ curl http://localhost:8000/health
 
 # NER services are internal (not published to host ports in compose).
 # Check readiness from inside the gateway container:
-docker-compose -f docker-compose.dev.yml exec gateway \
+docker compose -f docker-compose.dev.yml exec gateway \
   python -c "import urllib.request; print(urllib.request.urlopen('http://ner-transformer:8001/readyz').status)"
-docker-compose -f docker-compose.dev.yml exec gateway \
+docker compose -f docker-compose.dev.yml exec gateway \
   python -c "import urllib.request; print(urllib.request.urlopen('http://ner-bilstm:8002/readyz').status)"
-docker-compose -f docker-compose.dev.yml exec gateway \
+docker compose -f docker-compose.dev.yml exec gateway \
   python -c "import urllib.request; print(urllib.request.urlopen('http://ner-bilstm-crf:8005/readyz').status)"
-docker-compose -f docker-compose.dev.yml exec gateway \
+docker compose -f docker-compose.dev.yml exec gateway \
   python -c "import urllib.request; print(urllib.request.urlopen('http://ner-crf:8004/readyz').status)"
-docker-compose -f docker-compose.dev.yml exec gateway \
+docker compose -f docker-compose.dev.yml exec gateway \
   python -c "import urllib.request; print(urllib.request.urlopen('http://ner-llm:8003/readyz').status)"
 ```
 
@@ -433,7 +444,7 @@ docker-compose -f docker-compose.dev.yml exec gateway \
 ls services/ner-bilstm/models/model/
 
 # Rebuild service
-docker-compose -f docker-compose.dev.yml build ner-bilstm
+docker compose -f docker-compose.dev.yml build ner-bilstm
 ```
 
 #### LLM returns 503
@@ -445,7 +456,7 @@ docker-compose -f docker-compose.dev.yml build ner-bilstm
 OPENAI_API_KEY=sk-...
 
 # Restart service
-docker-compose -f docker-compose.dev.yml restart ner-llm
+docker compose -f docker-compose.dev.yml restart ner-llm
 ```
 
 #### Gateway cannot connect to services
@@ -457,11 +468,11 @@ docker-compose -f docker-compose.dev.yml restart ner-llm
 docker network inspect medai-microservices-dev
 
 # Check service status
-docker-compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.dev.yml ps
 
 # Restart all
-docker-compose -f docker-compose.dev.yml down
-docker-compose -f docker-compose.dev.yml up
+docker compose -f docker-compose.dev.yml down
+docker compose -f docker-compose.dev.yml up
 ```
 
 ## Development
@@ -470,65 +481,39 @@ docker-compose -f docker-compose.dev.yml up
 
 ```
 medai-backend/
-├── app/                       # API Gateway application
-│   ├── config.py              # Application configuration
-│   ├── deps.py                # FastAPI dependency injection
-│   ├── indexes.py             # MongoDB index definitions
-│   ├── main.py                # FastAPI application entry point
-│   ├── schemas.py             # Pydantic request/response models
-│   ├── repositories/          # Data access layer (Repository pattern)
-│   │   ├── __init__.py
-│   │   └── episode_repository.py  # Episode/note data access
-│   ├── routers/
-│   │   └── extract.py         # Extraction API endpoints
-│   └── services/
-│       ├── extraction_service.py   # Business logic layer (Service pattern)
-│       ├── ner_client.py      # NER microservices client
-│       ├── pipeline.py        # Extraction orchestration
-│       ├── registry.py        # Model registry
-│       ├── text_utils.py      # Document text extraction
-│       └── utils.py           # Shared utilities
-├── services/                  # NER microservices
-│   ├── ner-transformer/       # Transformer service (RoBERTa only)
-│   │   ├── Dockerfile
-│   │   ├── requirements.txt
-│   │   └── app/
-│   │       ├── main.py        # FastAPI app
-│   │       ├── config.py
-│   │       └── extractor.py   # NER extraction logic
-│   ├── ner-bilstm/            # BiLSTM service (no CRF)
-│   │   ├── Dockerfile
-│   │   ├── requirements.txt
-│   │   ├── app/
-│   │   └── models/            # BiLSTM model files
-│   ├── ner-bilstm-crf/        # BiLSTM-CRF service
-│   │   ├── Dockerfile
-│   │   ├── requirements.txt
-│   │   ├── app/
-│   │   └── models/            # BiLSTM-CRF model files
-│   ├── ner-crf/               # CRF service (sklearn-crfsuite)
-│   │   ├── Dockerfile
-│   │   ├── requirements.txt
-│   │   ├── app/
-│   │   └── models/            # CRF model files
-│   └── ner-llm/               # LLM service (GPT only)
-│       ├── Dockerfile
-│       ├── requirements.txt
-│       └── app/
-│           ├── main.py
-│           ├── config.py
-│           ├── extractor.py   # GPT extraction (few-shot, structured output)
-│           ├── prompts.py     # System/extraction prompts and few-shot builder
-│           └── examples/      # Few-shot examples (gitignored)
-├── shared/                    # Shared code between services
-│   └── schemas.py             # Shared Pydantic models
-├── scripts/
-│   └── export_openapi.py      # OpenAPI schema export (multi-service)
-├── docker-compose.dev.yml     # Development configuration
-├── docker-compose.prod.yml    # Production configuration
-├── Dockerfile.gateway         # Gateway container image
-├── requirements-gateway.txt   # Gateway dependencies
-└── README.md                  # This file
+|-- app/                       # API Gateway application
+|   |-- config.py              # Application configuration
+|   |-- deps.py                # FastAPI dependency injection
+|   |-- indexes.py             # MongoDB index definitions
+|   |-- main.py                # FastAPI application entry point
+|   |-- schemas.py             # Pydantic request/response models
+|   |-- repositories/          # Data access layer (Repository pattern)
+|   |   |-- __init__.py
+|   |   `-- episode_repository.py  # Episode/note data access
+|   |-- routers/
+|   |   `-- extract.py         # Extraction API endpoints
+|   `-- services/
+|       |-- extraction_service.py   # Business logic layer (Service pattern)
+|       |-- ner_client.py      # NER microservices client
+|       |-- pipeline.py        # Extraction orchestration
+|       |-- registry.py        # Model registry
+|       |-- text_utils.py      # Document text extraction
+|       `-- utils.py           # Shared utilities
+|-- services/                  # NER microservices
+|   |-- ner-transformer/       # Transformer service (RoBERTa only)
+|   |-- ner-bilstm/            # BiLSTM service (no CRF)
+|   |-- ner-bilstm-crf/        # BiLSTM-CRF service
+|   |-- ner-crf/               # CRF service (sklearn-crfsuite)
+|   `-- ner-llm/               # LLM service (GPT only)
+|-- shared/
+|   `-- schemas.py             # Shared Pydantic models
+|-- scripts/
+|   `-- export_openapi.py      # OpenAPI schema export (multi-service)
+|-- docker-compose.dev.yml     # Development configuration
+|-- docker-compose.prod.yml    # Production configuration
+|-- Dockerfile.gateway         # Gateway container image
+|-- requirements-gateway.txt   # Gateway dependencies
+`-- README.md                  # This file
 ```
 
 ### Running Tests
@@ -541,8 +526,8 @@ medai-backend/
 ### Code Formatting
 
 ```bash
-black app/ scripts/
-isort app/ scripts/
+py -m isort --profile black app/ services/ shared/ scripts/
+py -m black app/ services/ shared/ scripts/
 ```
 
 ### Type Checking
@@ -601,7 +586,7 @@ The frontend consumes the extraction API and provides a user interface for:
 
 Comprehensive documentation is available at:
 
-📘 **[MedAI Documentation](https://herreran903.github.io/docs-medai/)**
+**[MedAI Documentation](https://herreran903.github.io/docs-medai/)**
 
 The documentation includes:
 - Getting started guides
@@ -618,7 +603,7 @@ This project is part of a university thesis project at Universidad del Valle.
 Contributions are welcome. Please ensure:
 
 1. Code follows existing style conventions
-2. All tests pass
+2. Manual smoke checks pass (`/health` and at least one `POST /extract`)
 3. Documentation is updated for new features
 4. Commit messages are descriptive
 

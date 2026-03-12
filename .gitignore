@@ -69,3 +69,6 @@ services/ner-crf/models/
 
 # --- Few-shot examples (generated data, not source) ---
 services/ner-llm/app/examples/
+
+# --- Ignore Jupyter notebooks (if you want to keep them out of git history, but they can be useful for local experimentation) ---
+*.ipynb

@@ -25,16 +25,18 @@ from fastapi.responses import JSONResponse
 # Add parent directory to path for shared module access
 sys.path.insert(0, "/app")
 
-from shared.schemas import Entity, ErrorResponse, NERRequest, NERResponse
-
 from app.config import get_settings
+from shared.schemas import Entity, ErrorResponse, NERRequest, NERResponse
 
 DOCS_BUILD = os.getenv("DOCS_BUILD") == "1"
 
 if DOCS_BUILD:
+
     class LLMExtractor:  # type: ignore
         """Placeholder to allow OpenAPI export without heavy deps."""
+
         pass
+
 else:
     from app.extractor import LLMExtractor
 
@@ -90,10 +92,24 @@ async def startup_event():
             _model_loaded = False
             raise ValueError("OPENAI_API_KEY is required")
 
-        logger.info(f"Initializing LLMExtractor (model: {settings.gpt_model})")
-        _extractor = LLMExtractor(api_key=settings.openai_api_key, model=settings.gpt_model)
+        logger.info(
+            "Initializing LLMExtractor (model=%s, prompt_mode=%s)",
+            settings.gpt_model,
+            settings.prompt_mode,
+        )
+        _extractor = LLMExtractor(
+            api_key=settings.openai_api_key,
+            model=settings.gpt_model,
+            temperature=settings.gpt_temperature,
+            max_output_tokens=settings.gpt_max_output_tokens,
+            prompt_mode=settings.prompt_mode,
+            max_retries=settings.gpt_max_retries,
+            retry_sleep=settings.gpt_retry_sleep_sec,
+        )
         _model_loaded = True
-        logger.info(f"LLM extractor initialized successfully (GPT {settings.gpt_model})")
+        logger.info(
+            f"LLM extractor initialized successfully (GPT {settings.gpt_model})"
+        )
 
     except Exception as e:
         logger.error(f"Failed to initialize LLM extractor: {e}", exc_info=True)
@@ -217,17 +233,25 @@ def predict(request: NERRequest):
     # Validate input
     if not request.text or not request.text.strip():
         logger.warning("Empty text received in extraction request")
+        empty_meta = {
+            "model": "llm",
+            "provider": "gpt",
+            "count": 0,
+        }
+        if hasattr(_extractor, "meta"):
+            try:
+                empty_meta.update(_extractor.meta())
+            except Exception:
+                pass
         return NERResponse(
             entities=[],
-            meta={
-                "model": "llm",
-                "provider": "gpt",
-                "count": 0,
-            },
+            meta=empty_meta,
         )
 
     try:
-        logger.info(f"Processing extraction request (text_length={len(request.text)}, provider=gpt)")
+        logger.info(
+            f"Processing extraction request (text_length={len(request.text)}, provider=gpt)"
+        )
         start_time = time.time()
 
         # Extract entities using LLM
@@ -244,7 +268,9 @@ def predict(request: NERRequest):
             try:
                 entities.append(Entity(**e))
             except Exception as entity_error:
-                logger.warning(f"Invalid entity format, skipping: {e} (error: {entity_error})")
+                logger.warning(
+                    f"Invalid entity format, skipping: {e} (error: {entity_error})"
+                )
                 continue
 
         # Build metadata

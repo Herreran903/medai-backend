@@ -47,6 +47,26 @@ class Settings(BaseSettings):
         default="gpt-5.4",
         description="GPT model identifier to use (default: gpt-5.4)",
     )
+    gpt_temperature: float = Field(
+        default=0.0,
+        description="Sampling temperature for GPT inference",
+    )
+    gpt_max_output_tokens: int = Field(
+        default=4000,
+        description="Maximum completion tokens for GPT responses",
+    )
+    prompt_mode: str = Field(
+        default="few_shot",
+        description="Prompting mode: zero_shot or few_shot",
+    )
+    gpt_max_retries: int = Field(
+        default=3,
+        description="Max retries for GPT extraction when payload/transport fails",
+    )
+    gpt_retry_sleep_sec: float = Field(
+        default=2.0,
+        description="Sleep seconds between GPT retry attempts",
+    )
 
 
 @lru_cache
