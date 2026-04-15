@@ -1,7 +1,7 @@
 # ==============================================================================
 # MedAI BiLSTM (no-CRF) NER Service Dependencies
 # ==============================================================================
-# Keras/TensorFlow 2.15 inference service.
+# Keras 3 + TensorFlow inference service.
 
 # --- Web Framework & API ---
 fastapi>=0.104.0
@@ -11,11 +11,12 @@ uvicorn[standard]>=0.24.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
-# --- Keras 2.15 + Backend ---
-# The current model artifact was saved with Keras 2.15.
-keras==2.15.0
-tensorflow==2.15.1
+# --- Keras 3 + TensorFlow Backend ---
+# The current model artifact (model.keras) was saved with Keras 3.13.2.
+# Keep runtime aligned with the saved artifact to avoid deserialization errors.
+keras==3.13.2
+tensorflow==2.19.0
 
 # --- Numerical ---
-numpy>=1.26.0,<2.0
+numpy==1.26.4
 
