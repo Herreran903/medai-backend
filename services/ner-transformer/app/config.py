@@ -36,10 +36,12 @@ class Settings(BaseSettings):
         description="Logging level (debug, info, warning, error, critical)",
     )
 
-    # Hugging Face model IDs
+    # Hugging Face model ID for RoBERTa NER.
+    # The service loads weights and tokenizer from the HF Hub at startup
+    # (cached in /root/.cache/huggingface via the docker volume).
     transformer_roberta_model_id: str = Field(
         default="NicolasUnivalle/roberta-vm-ner",
-        description="Hugging Face model ID for RoBERTa-based clinical NER (ACTIVE)",
+        description="Hugging Face model ID for RoBERTa NER",
     )
 
     # Device configuration

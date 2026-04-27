@@ -23,9 +23,9 @@ Entity Categories:
     The LLM is prompted to extract entities in these clinical categories:
 
     - Ventilation configuration (MODO, FIO2, PEEP, FR, VT, etc.)
-    - Ventilation response (SAO2, PP, PMES, PM)
+    - Ventilation response (SAO2)
     - Anthropometrics (EDAD, PESO, TALLA)
-    - Vital signs (TEMP, PA, FC, GLICEMIA)
+    - Vital signs (TEMP, PA, PAM, FC, GLICEMIA, POSTURA)
     - Arterial blood gases (PH, PACO2, PAO2, PAFI)
     - Diagnoses (DX)
 
@@ -71,12 +71,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .prompts import SYSTEM_PROMPT, build_user_prompt, load_few_shot_examples
+from .prompts import SYSTEM_PROMPT, build_user_prompt
 
 # Logger configuration
 logger = logging.getLogger(__name__)
-
-_PROMPT_MODES = {"zero_shot", "few_shot"}
 
 
 # ==============================================================================
@@ -112,10 +110,10 @@ class LLMOutput(BaseModel):
 # ==============================================================================
 
 ENTITY_CATEGORIES: Dict[str, List[str]] = {
-    "ventilacion": ["MODO", "FIO2", "PEEP", "FR", "VT", "FLUJO", "I_E", "SENS"],
-    "respuesta_ventilacion": ["SAO2", "PP", "PMES", "PM"],
+    "ventilacion": ["MODO", "FIO2", "PEEP", "FR", "VT", "I_E"],
+    "respuesta_ventilacion": ["SAO2"],
     "antropometricos": ["EDAD", "PESO", "TALLA"],
-    "signos_vitales": ["TEMP", "PA", "PAS", "PAD", "PAM", "FC", "GLICEMIA", "POSTURA"],
+    "signos_vitales": ["TEMP", "PA", "PAM", "FC", "GLICEMIA", "POSTURA"],
     "observaciones": ["DX"],
     "gases_arteriales": ["PH", "PACO2", "HCO3", "BE", "PAO2", "PAFI"],
 }
@@ -185,7 +183,7 @@ def _normalize_llm_payload(payload: Any) -> dict:
     return {"entities": []}
 
 
-@dataclass(frozen=True)
+@dataclass
 class ResolvedSpan:
     start: int
     end: int
@@ -208,6 +206,30 @@ def _find_spans(text: str, query: str, *, case_sensitive: bool) -> List[int]:
     return positions
 
 
+def _normalize_entity_type(entity_type: str, valid_types: set) -> Optional[str]:
+    """
+    Normalize and validate an LLM-returned entity type label.
+
+    Mirrors ``normalize_entity_type`` in LLM.ipynb:
+        - strip whitespace
+        - uppercase
+        - return None if not in valid_types (entity is dropped by caller)
+
+    Args:
+        entity_type: Raw label as returned by the LLM.
+        valid_types: Allowed entity labels (typically ``self.entity_types``).
+
+    Returns:
+        Canonical label if recognized, else ``None``.
+    """
+    if not entity_type:
+        return None
+    norm = entity_type.strip().upper()
+    if norm in valid_types:
+        return norm
+    return None
+
+
 def _resolve_entity_offsets(
     text: str, entity: LLMEntity
 ) -> Tuple[Optional[ResolvedSpan], str]:
@@ -218,7 +240,8 @@ def _resolve_entity_offsets(
     1. Accept provided offsets if exact (or case-insensitive exact).
     2. Search exact text occurrence(s), optionally using provided offset as hint.
     3. Search case-insensitive occurrence(s).
-    4. Fallback to normalized search without spaces.
+    4. Fallback to partial contained match.
+    5. Fallback to normalized search without spaces.
     """
     raw_text = (entity.text or "").strip()
     if not raw_text:
@@ -227,76 +250,106 @@ def _resolve_entity_offsets(
     provided_start = entity.start
     provided_end = entity.end
 
-    if 0 <= provided_start < provided_end <= len(text):
-        extracted = text[provided_start:provided_end]
-        if extracted == raw_text:
-            return ResolvedSpan(provided_start, provided_end, "provided_exact"), "ok"
-        if extracted.lower() == raw_text.lower():
-            return (
-                ResolvedSpan(provided_start, provided_end, "provided_case_insensitive"),
-                "ok",
-            )
+    # 1. Verificar si el offset proporcionado es exacto
+    if provided_start is not None and provided_end is not None:
+        if 0 <= provided_start < provided_end <= len(text):
+            extracted = text[provided_start:provided_end]
+            if extracted == raw_text:
+                return (
+                    ResolvedSpan(provided_start, provided_end, "provided_exact"),
+                    "ok",
+                )
+            if extracted.lower() == raw_text.lower():
+                return (
+                    ResolvedSpan(
+                        provided_start, provided_end, "provided_case_insensitive"
+                    ),
+                    "ok",
+                )
 
+    # 2. Buscar todas las ocurrencias exactas
     hits = _find_spans(text, raw_text, case_sensitive=True)
+
     if len(hits) == 1:
         start = hits[0]
         return ResolvedSpan(start, start + len(raw_text), "exact_unique"), "ok"
+
     if len(hits) > 1:
         if provided_start is not None:
             closest = min(hits, key=lambda h: abs(h - provided_start))
-            if abs(closest - provided_start) <= 100:
+            distance = abs(closest - provided_start)
+            if distance <= 50:
                 return (
                     ResolvedSpan(closest, closest + len(raw_text), "exact_closest"),
                     "ok",
                 )
+            for hit in hits:
+                if abs(hit - provided_start) <= 100:
+                    return (
+                        ResolvedSpan(hit, hit + len(raw_text), "exact_nearby"),
+                        "ok",
+                    )
         start = hits[0]
         return ResolvedSpan(start, start + len(raw_text), "exact_first"), "ok"
 
+    # 3. Buscar sin distinguir mayúsculas/minúsculas
     hits = _find_spans(text, raw_text, case_sensitive=False)
+
     if len(hits) == 1:
         start = hits[0]
         return (
             ResolvedSpan(start, start + len(raw_text), "case_insensitive_unique"),
             "ok",
         )
+
     if len(hits) > 1:
         if provided_start is not None:
             closest = min(hits, key=lambda h: abs(h - provided_start))
-            if abs(closest - provided_start) <= 100:
+            distance = abs(closest - provided_start)
+            if distance <= 50:
                 return (
                     ResolvedSpan(
                         closest, closest + len(raw_text), "case_insensitive_closest"
                     ),
                     "ok",
                 )
+            for hit in hits:
+                if abs(hit - provided_start) <= 100:
+                    return (
+                        ResolvedSpan(
+                            hit, hit + len(raw_text), "case_insensitive_nearby"
+                        ),
+                        "ok",
+                    )
         start = hits[0]
         return (
             ResolvedSpan(start, start + len(raw_text), "case_insensitive_first"),
             "ok",
         )
 
-    raw_no_space = raw_text.replace(" ", "").lower()
-    if len(raw_no_space) >= 2:
-        text_no_space = text.replace(" ", "").lower()
-        idx_no_space = text_no_space.find(raw_no_space)
-        if idx_no_space != -1:
-            matched = 0
-            real_start = None
-            real_end = None
-            for i, ch in enumerate(text):
-                if ch == " ":
-                    continue
-                if matched == idx_no_space and real_start is None:
-                    real_start = i
-                if idx_no_space <= matched < idx_no_space + len(raw_no_space):
-                    real_end = i + 1
-                matched += 1
-            if (
-                real_start is not None
-                and real_end is not None
-                and real_start < real_end
-            ):
-                return ResolvedSpan(real_start, real_end, "normalized_match"), "ok"
+    # 4. Buscar coincidencia parcial (raw_text contenido en el texto)
+    text_lower = text.lower()
+    raw_lower = raw_text.lower()
+
+    idx = text_lower.find(raw_lower)
+    if idx != -1:
+        return ResolvedSpan(idx, idx + len(raw_text), "partial_contained"), "ok"
+
+    # 5. Buscar con tokens normalizados (sin espacios)
+    raw_normalized = raw_text.replace(" ", "").lower()
+    if len(raw_normalized) >= 2:
+        for j in range(len(text) - len(raw_normalized) + 1):
+            window = text[j : j + len(raw_normalized) + 5].replace(" ", "").lower()
+            if window.startswith(raw_normalized):
+                end_idx = j
+                chars_matched = 0
+                for k in range(j, min(j + len(raw_text) + 10, len(text))):
+                    if text[k] != " ":
+                        chars_matched += 1
+                    if chars_matched >= len(raw_normalized):
+                        end_idx = k + 1
+                        break
+                return ResolvedSpan(j, end_idx, "normalized_match"), "ok"
 
     return None, "not_found"
 
@@ -311,20 +364,20 @@ class GPTLLMExtractor:
     Clinical entity extractor using OpenAI GPT (aligned with LLM.ipynb notebook).
 
     Uses OpenAI Chat Completions with structured outputs (JSON schema mode) to
-    return valid JSON that matches :class:`LLMOutput`. Prompts and few-shot
-    examples are loaded from ``prompts.py`` and ``examples/`` respectively.
+    return valid JSON that matches :class:`LLMOutput`. Prompts are loaded from
+    ``prompts.py`` (zero-shot only).
 
     Architecture:
         Uses ``response_format={"type": "json_schema", ...}`` in strict mode
         when available, and falls back to prompt-based JSON parsing if needed.
-        Prompting mode defaults to ``few_shot`` and is configurable.
+        Prompts are zero-shot (matches the canonical experiment
+        ``exp-20260424-010034-llm-gpt-structured``).
 
     Attributes:
         api_key: OpenAI API key for authentication.
         model: GPT model identifier (default: gpt-5.4).
         client: OpenAI client instance (lazy-initialized).
         entity_types: Sorted list of entity type labels from ENTITY_CATEGORIES.
-        few_shot_examples: Few-shot examples loaded at init.
 
     Example:
         >>> extractor = GPTLLMExtractor()
@@ -343,7 +396,6 @@ class GPTLLMExtractor:
         *,
         temperature: float = 0.0,
         max_output_tokens: int = 4000,
-        prompt_mode: str = "few_shot",
         max_retries: int = 3,
         retry_sleep: float = 2.0,
     ) -> None:
@@ -351,12 +403,6 @@ class GPTLLMExtractor:
         self.model = model
         self.temperature = float(temperature)
         self.max_output_tokens = int(max_output_tokens)
-        normalized_prompt_mode = str(prompt_mode or "few_shot").strip().lower()
-        self.prompt_mode = (
-            normalized_prompt_mode
-            if normalized_prompt_mode in _PROMPT_MODES
-            else "few_shot"
-        )
         self.max_retries = max(1, int(max_retries))
         self.retry_sleep = max(0.0, float(retry_sleep))
         self.client = None
@@ -366,9 +412,6 @@ class GPTLLMExtractor:
         self.entity_types = sorted(
             {label for labels in ENTITY_CATEGORIES.values() for label in labels}
         )
-
-        # Load few-shot examples (empty list if file not found)
-        self.few_shot_examples = load_few_shot_examples()
 
         if self.api_key:
             try:
@@ -390,16 +433,11 @@ class GPTLLMExtractor:
     def _build_prompt_args(
         self, text: str, include_schema: bool, schema: dict
     ) -> Dict[str, Any]:
-        few_shot_examples = (
-            self.few_shot_examples if self.prompt_mode == "few_shot" else []
-        )
         return {
             "text": text,
             "entity_types": self.entity_types,
             "schema": schema,
             "include_schema": include_schema,
-            "prompt_mode": self.prompt_mode,
-            "few_shot_examples": few_shot_examples,
         }
 
     def _extract_payload_once(self, text: str, schema: dict) -> Any:
@@ -477,11 +515,23 @@ class GPTLLMExtractor:
                 llm_output = LLMOutput.model_validate(payload)
 
                 result = []
-                dropped = 0
+                dropped_offset = 0
+                dropped_type = 0
+                valid_types = set(self.entity_types)
                 for entity in llm_output.entities:
+                    canon_type = _normalize_entity_type(entity.type, valid_types)
+                    if canon_type is None:
+                        dropped_type += 1
+                        logger.warning(
+                            "Dropping entity with unknown/invalid type %r (valid: %s)",
+                            entity.type,
+                            sorted(valid_types),
+                        )
+                        continue
+
                     resolved, status = _resolve_entity_offsets(text, entity)
                     if not resolved:
-                        dropped += 1
+                        dropped_offset += 1
                         logger.warning(
                             "Dropping entity due to unresolved offsets (%s): %s",
                             status,
@@ -492,7 +542,7 @@ class GPTLLMExtractor:
                     span_text = text[resolved.start : resolved.end]
                     result.append(
                         {
-                            "type": entity.type,
+                            "type": canon_type,
                             "text": span_text,
                             "start": resolved.start,
                             "end": resolved.end,
@@ -500,10 +550,14 @@ class GPTLLMExtractor:
                         }
                     )
 
-                if dropped:
+                if dropped_type:
+                    logger.warning(
+                        "Dropped %d entities with invalid type", dropped_type
+                    )
+                if dropped_offset:
                     logger.warning(
                         "Dropped %d entities after offset reconciliation",
-                        dropped,
+                        dropped_offset,
                     )
                 logger.info("Extracted %d clinical entities with GPT", len(result))
                 return result
@@ -548,7 +602,6 @@ class GPTLLMExtractor:
         return {
             "model": self.model,
             "provider": "gpt",
-            "prompt_mode": self.prompt_mode,
             "temperature": self.temperature,
             "max_output_tokens": self.max_output_tokens,
         }
@@ -569,7 +622,7 @@ class LLMExtractor:
         - Provider: GPT (forced)
         - Model: gpt-5.4 (default)
         - Temperature: 0.0 (default)
-        - Prompting: few-shot (default)
+        - Prompting: zero-shot (matches canonical experiment)
 
     Attributes:
         provider: Always "gpt" (fixed).
@@ -590,7 +643,6 @@ class LLMExtractor:
         *,
         temperature: float = 0.0,
         max_output_tokens: int = 4000,
-        prompt_mode: str = "few_shot",
         max_retries: int = 3,
         retry_sleep: float = 2.0,
     ) -> None:
@@ -607,13 +659,12 @@ class LLMExtractor:
         if not api_key:
             raise ValueError("OpenAI API key required for GPT extractor")
 
-        # Always use GPT with deterministic configuration
+        # Always use GPT with deterministic configuration (zero-shot)
         self.extractor = GPTLLMExtractor(
             api_key=api_key,
             model=model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
-            prompt_mode=prompt_mode,
             max_retries=max_retries,
             retry_sleep=retry_sleep,
         )

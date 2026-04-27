@@ -19,7 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Python dependencies
 COPY services/ner-crf/requirements.txt ./
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    python -m spacy download es_core_news_sm
 
 # Copy service code
 COPY services/ner-crf/app ./app

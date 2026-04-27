@@ -1,13 +1,14 @@
 # ==============================================================================
 # MedAI BiLSTM NER Service - Dockerfile
 # ==============================================================================
-# Keras/TensorFlow 2.15 backend image for BiLSTM NER service (no CRF layer).
+# TensorFlow 2.15.1 + Keras 2.15 image para el servicio BiLSTM NER (sin CRF).
+# El modelo fue entrenado en Python 3.10 (WSL local) con TF 2.15.1 + Keras 2.15.
 # Model files are included in the image for fast startup.
 #
 # Image size: ~1GB (TensorFlow + model files)
 # Startup time: 5-10s (model loading from disk)
 
-FROM python:3.11-slim
+FROM python:3.10-slim
 
 # Install system dependencies for TensorFlow
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,9 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Force Keras to use the TensorFlow backend
-ENV KERAS_BACKEND=tensorflow
 
 # Install Python dependencies
 COPY services/ner-bilstm/requirements.txt ./

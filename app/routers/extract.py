@@ -51,23 +51,10 @@ See Also:
 
 from typing import List, Optional
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    File,
-    Form,
-    Path,
-    UploadFile,
-    status,
-)
-
 from app.deps import get_extraction_service
-from app.schemas import (
-    BatchAckResponse,
-    ExtractAck,
-    ExtractResponse,
-)
+from app.schemas import BatchAckResponse, ExtractAck, ExtractResponse
 from app.services.extraction_service import ExtractionService
+from fastapi import APIRouter, Depends, File, Form, Path, UploadFile, status
 
 router = APIRouter(
     tags=["Extraction"],
@@ -312,3 +299,92 @@ async def get_note(
         HTTPException: 404 if note not found.
     """
     return await service.get_note(note_id)
+
+
+@router.get(
+    "/notes/{note_id}/export",
+    summary="Export extraction result as Excel file",
+    description="""
+Export a stored extraction result as a downloadable Excel (.xlsx) file.
+
+**Business Purpose:**
+Allows clinicians and researchers to download extraction results in a
+spreadsheet format suitable for analysis, reporting, or record-keeping.
+
+**Excel Structure:**
+- **Sheet 1 – "Resultados"**: Raw extraction data with all entity fields
+  (Tipo, Texto, Código, Inicio, Fin).
+- **Sheet 2 – "Normalizado"**: Cleaned values with numeric fields stored
+  as actual numbers (not text), using the already-normalized `code` field.
+
+**Usage Context:**
+- Clinical data export for downstream analysis
+- Research data collection
+- Audit and documentation workflows
+""",
+    response_description="Excel file (.xlsx) with two sheets: raw results and normalized values",
+    responses={
+        404: {"description": "Note not found with the specified ID"},
+    },
+)
+async def export_note_excel(
+    note_id: str = Path(
+        ...,
+        description="Unique note identifier (UUID format) returned from extraction endpoints.",
+    ),
+    service: ExtractionService = Depends(get_extraction_service),
+):
+    """
+    Export a stored extraction result as an Excel file.
+
+    Builds a two-sheet workbook from the stored extraction result:
+    - Sheet 1 ("Resultados"): raw entity data as extracted.
+    - Sheet 2 ("Normalizado"): entity type and clean numeric/text value.
+
+    Args:
+        note_id: UUID of the note to export.
+        service: ExtractionService instance (injected).
+
+    Returns:
+        StreamingResponse: Excel file with appropriate content headers.
+
+    Raises:
+        HTTPException: 404 if note not found.
+    """
+    import io
+
+    import openpyxl
+    from fastapi.responses import StreamingResponse
+
+    data = await service.get_note(note_id)
+
+    wb = openpyxl.Workbook()
+
+    # --- Hoja 1: Resultados crudos ---
+    ws1 = wb.active
+    ws1.title = "Resultados"
+    ws1.append(["Tipo", "Texto", "Código", "Inicio", "Fin"])
+    for e in data.entities:
+        ws1.append([e.type, e.text, e.code, e.start, e.end])
+
+    # --- Hoja 2: Normalizado (code como número cuando sea posible) ---
+    ws2 = wb.create_sheet("Normalizado")
+    ws2.append(["Tipo", "Valor"])
+    for e in data.entities:
+        try:
+            valor = float(e.code) if e.code is not None else None
+        except (ValueError, TypeError):
+            valor = e.code
+        ws2.append([e.type, valor])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = f"nota_{note_id[:8]}.xlsx"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )

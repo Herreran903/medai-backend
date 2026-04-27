@@ -15,6 +15,9 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import spacy
+from spacy.tokens import Doc
+
 try:
     import joblib
 except Exception:  # pragma: no cover
@@ -27,28 +30,159 @@ EXPECTED_FEATURE_SCHEMA = "notebook_v2"
 EXPECTED_TOKENIZER_SCHEMA = "regex_word_punct_v1"
 _NOTEBOOK_V2_SIGNATURE_PREFIX = "shape.compact:"
 
-# Equivalent token sequence to notebook's re.split(r"(\\W)") with empty filtering,
+# Equivalent token sequence to notebook's re.split(r"(\W)") with empty filtering,
 # but preserves exact character offsets via finditer for entity span reconstruction.
 _TOKEN_REGEX = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 
+# ---------------------------------------------------------------------------
+# UNIT_ANCHORS — must match notebook_v2 exactly
+# ---------------------------------------------------------------------------
 UNIT_ANCHORS = {
     "pressure": {"mmhg", "cmh2o", "cmh20"},
-    "volume": {"ml", "cc", "l", "lt", "lts", "litro", "litros", "ml/kg", "mlkg"},
+    "volume": {
+        "ml",
+        "cc",
+        "l",
+        "lt",
+        "lts",
+        "litro",
+        "litros",
+        "ml/kg",
+        "mlkg",
+        "ml/h",
+        "l/h",
+    },
     "saturation": {"%", "porcentaje", "sat", "spo2", "sao2"},
-    "oxygen_fraction": {"fio2"},
     "resp_rate": {"rpm", "resp/min", "/min", "min-1"},
-    "heart_rate": {"lpm", "bpm", "lat/min"},
+    "heart_rate": {"lpm", "bpm", "lat/min", "pm"},
     "temperature": {"oc", "co", "grados", "celsius"},
     "chemistry": {"mmol/l", "meq/l", "mg/dl", "g/dl"},
     "weight": {"kg", "kgs", "kilo", "kilos"},
     "height": {"cm", "mts", "metro", "metros"},
+    "age": {"años"},
 }
 
+# ---------------------------------------------------------------------------
+# CLINICAL_GAZETTEERS — must match notebook_v2 exactly
+# ---------------------------------------------------------------------------
+CLINICAL_GAZETTEERS: Dict[str, set] = {
+    "vent_config": {
+        "ac",
+        "vc",
+        "pc",
+        "simv",
+        "cpap",
+        "bipap",
+        "psv",
+        "ps",
+        "aprv",
+        "hfov",
+        "nava",
+        "prvc",
+        "vcrp",
+        "acv",
+        "vcv",
+        "pav",
+        "prcv",
+        "blv",
+        "peep",
+        "fio2",
+        "fi02",
+        "vt",
+        "fr",
+        "vol",
+        "volt",
+        "ti",
+        "te",
+        "ie",
+    },
+    "vent_response": {
+        "sao2",
+        "so2",
+        "sat",
+        "spo2",
+        "saturacion",
+    },
+    "anthropometric": {
+        "peso",
+        "talla",
+        "imc",
+        "edad",
+    },
+    "vital_sign": {
+        "fc",
+        "pa",
+        "pas",
+        "pad",
+        "pam",
+        "tam",
+        "ta",
+        "temp",
+        "temperatura",
+        "glucometria",
+        "glucometrias",
+        "glicemia",
+        "glucosa",
+    },
+    "observation": {
+        "cabecera",
+        "supino",
+        "supina",
+        "supinacion",
+        "prono",
+        "pronacion",
+        "decubito",
+        "semifowler",
+        "trendelenburg",
+        "sedente",
+        "postura",
+        "posicion",
+        "posicionamiento",
+    },
+    "blood_gas": {
+        "ph",
+        "pco2",
+        "paco2",
+        "po2",
+        "pao2",
+        "hco3",
+        "be",
+        "eb",
+        "pafi",
+        "lactato",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Numeric regex patterns — must match notebook_v2 exactly
+# ---------------------------------------------------------------------------
 _NUMERIC_RE = re.compile(r"^[+-]?\d+(?:[\.,]\d+)?$")
 _DECIMAL_RE = re.compile(r"^[+-]?\d+[\.,]\d+$")
 _BP_RATIO_RE = re.compile(r"^\d{2,3}/\d{2,3}$")
 _IE_RATIO_RE = re.compile(r"^\d+(?:[\.,]\d+)?:\d+(?:[\.,]\d+)?$")
 _PERCENT_RE = re.compile(r"^[+-]?\d+(?:[\.,]\d+)?%$")
+
+# ---------------------------------------------------------------------------
+# spaCy POS tagger (loaded once at module level, same config as notebook_v2)
+# ---------------------------------------------------------------------------
+_NLP_POS = spacy.load(
+    "es_core_news_sm",
+    disable=["ner", "parser", "lemmatizer", "senter", "attribute_ruler"],
+)
+logger.info("spaCy POS tagger cargado: es_core_news_sm (solo morphologizer)")
+
+
+# ===========================================================================
+# Helper functions
+# ===========================================================================
+
+
+def _pos_tag_sentence(sent: List[str]) -> List[str]:
+    """Obtiene POS tags para una oración pre-tokenizada usando spaCy."""
+    doc = Doc(_NLP_POS.vocab, words=sent)
+    for pipe_name in ["tok2vec", "morphologizer"]:
+        _NLP_POS.get_pipe(pipe_name)(doc)
+    return [token.pos_ for token in doc]
 
 
 def _tokenize(text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
@@ -63,11 +197,12 @@ def _tokenize(text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
 def _normalize_token(token: str) -> str:
     token = token.lower().strip()
     token = token.replace("²", "2").replace("°", "o")
-    token = token.strip(".,;()[]{}")
+    token = token.strip(".,;()[]{}\\")
     return token
 
 
 def _word_shape(token: str) -> str:
+    """Representación compacta de forma de palabra para patrones clínicos."""
     tags = []
     for ch in token:
         if ch.isdigit():
@@ -76,13 +211,19 @@ def _word_shape(token: str) -> str:
             t = "X"
         elif ch.islower():
             t = "x"
-        elif ch in "/:.,%+-":
+        elif ch in "/:.,%+-":  # matches notebook_v2
             t = ch
         else:
             t = "o"
         if not tags or tags[-1] != t:
             tags.append(t)
-    return "".join(tags)[:24]
+    return "".join(tags)[:10]
+
+
+def _gazetteer_lookup(token: str) -> Dict[str, bool]:
+    """Busca un token en todos los gazetteers clínicos."""
+    tok = _normalize_token(token)
+    return {f"gaz.{cat}": tok in vocab for cat, vocab in CLINICAL_GAZETTEERS.items()}
 
 
 def _classify_anchor_unit(token: str) -> Optional[str]:
@@ -92,14 +233,9 @@ def _classify_anchor_unit(token: str) -> Optional[str]:
         if tok in vocab:
             return category
 
-    if re.fullmatch(r"(mmhg|cmh2o|cmh20)", tok):
-        return "pressure"
-    if re.fullmatch(r"(ml|min|l|min|ml/h|l/h)", tok):
-        return "volume"
-    if tok == "%" or tok.endswith("%"):
+    # Patrones adicionales no cubiertos por el diccionario (notebook_v2)
+    if tok.endswith("%"):
         return "saturation"
-    if re.fullmatch(r"(rpm|bpm|lpm)", tok):
-        return "resp_rate"
     if _IE_RATIO_RE.fullmatch(tok):
         return "ratio_ie"
 
@@ -108,23 +244,22 @@ def _classify_anchor_unit(token: str) -> Optional[str]:
 
 def _scan_next_anchors(
     sent: Sequence[str], i: int, max_offset: int = 3
-) -> Tuple[Dict[str, bool], Optional[str], Optional[int]]:
+) -> Tuple[Dict[str, bool], Optional[int]]:
     categories = {
         "pressure": False,
         "volume": False,
         "saturation": False,
-        "oxygen_fraction": False,
         "resp_rate": False,
         "heart_rate": False,
         "temperature": False,
         "chemistry": False,
         "weight": False,
         "height": False,
+        "age": False,
         "ratio_ie": False,
     }
 
-    first_unit = None
-    first_distance = None
+    first_distance: Optional[int] = None
 
     for offset in range(1, max_offset + 1):
         j = i + offset
@@ -135,25 +270,31 @@ def _scan_next_anchors(
             continue
 
         categories[unit_cat] = True
-        if first_unit is None:
-            first_unit = _normalize_token(sent[j])
+        if first_distance is None:
             first_distance = offset
 
-    return categories, first_unit, first_distance
+    return categories, first_distance
 
 
-def _token2features(tokens: Sequence[str], i: int) -> Dict[str, Any]:
+def word2features(
+    tokens: Sequence[str],
+    i: int,
+    pos_tags: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Extrae features para un token en una oración.
+
+    Incluye forma de palabra, contexto local, patrones simbólicos,
+    anclaje semántico por unidades, POS tags y gazetteers clínicos.
+    Debe ser idéntica a word2features() del notebook_v2.
+    """
     word = tokens[i]
-    word_norm = _normalize_token(word)
 
-    is_numeric_candidate = (
-        bool(_NUMERIC_RE.fullmatch(word_norm))
-        or bool(_BP_RATIO_RE.fullmatch(word_norm))
-        or bool(_IE_RATIO_RE.fullmatch(word_norm))
-        or bool(_PERCENT_RE.fullmatch(word_norm))
-        or any(c.isdigit() for c in word)
-    )
-
+    # --- Core token features (notebook_v2 SIMPLE: 11 claves) ---
+    # Eliminadas por redundancia: isalpha, isalnum, mixed_case, len,
+    # shape.has_slash/colon/dot/comma/decimal_sep (contenidas en shape.compact),
+    # shape.bp_ratio_like/ie_ratio_like/percent_like (contenidas en shape.compact),
+    # num.is_candidate (subsumido por has_digit), num.is_decimal (contenido en shape.compact).
     features: Dict[str, Any] = {
         "bias": 1.0,
         "word.lower()": word.lower(),
@@ -162,100 +303,96 @@ def _token2features(tokens: Sequence[str], i: int) -> Dict[str, Any]:
         "word[:3]": word[:3],
         "word[:2]": word[:2],
         "word.isupper()": word.isupper(),
-        "word.istitle()": word.istitle(),
         "word.isdigit()": word.isdigit(),
-        "word.isalpha()": word.isalpha(),
-        "word.isalnum()": word.isalnum(),
-        "word.len": len(word),
-        "word.has_hyphen": "-" in word,
         "word.has_digit": any(c.isdigit() for c in word),
-        "word.has_upper": any(c.isupper() for c in word),
-        "word.all_caps": word.isupper() and len(word) > 1,
-        "word.mixed_case": (
-            not word.islower() and not word.isupper() and word.isalpha()
-        ),
+        "word.has_hyphen": "-" in word,
         "shape.compact": _word_shape(word),
-        "shape.has_slash": "/" in word,
-        "shape.has_colon": ":" in word,
-        "shape.has_dot": "." in word,
-        "shape.has_comma": "," in word,
-        "shape.has_decimal_sep": bool(re.search(r"\d[\.,]\d", word)),
-        "shape.bp_ratio_like": bool(_BP_RATIO_RE.fullmatch(word_norm)),
-        "shape.ie_ratio_like": bool(_IE_RATIO_RE.fullmatch(word_norm)),
-        "shape.percent_like": bool(_PERCENT_RE.fullmatch(word_norm)),
-        "num.is_candidate": is_numeric_candidate,
-        "num.is_decimal": bool(_DECIMAL_RE.fullmatch(word_norm)),
     }
 
+    # --- POS tags (spaCy es_core_news_sm, morphologizer only) ---
+    if pos_tags is not None:
+        features["pos"] = pos_tags[i]
+        if i > 0:
+            features["-1:pos"] = pos_tags[i - 1]
+        if i > 1:
+            features["-2:pos"] = pos_tags[i - 2]
+        if i < len(tokens) - 1:
+            features["+1:pos"] = pos_tags[i + 1]
+        if i < len(tokens) - 2:
+            features["+2:pos"] = pos_tags[i + 2]
+
+    # --- Gazetteers clínicos (token actual) ---
+    features.update(_gazetteer_lookup(word))
+
+    # --- Contexto: token anterior i-1 ---
     if i > 0:
         word1 = tokens[i - 1]
         features.update(
             {
                 "-1:word.lower()": word1.lower(),
-                "-1:word.istitle()": word1.istitle(),
                 "-1:word.isupper()": word1.isupper(),
                 "-1:word.isdigit()": word1.isdigit(),
                 "-1:word[-3:]": word1[-3:],
                 "-1:word[-2:]": word1[-2:],
             }
         )
+        features.update({f"-1:{k}": v for k, v in _gazetteer_lookup(word1).items()})
     else:
         features["BOS"] = True
 
+    # --- Contexto: dos tokens anteriores i-2 (solo lower + sufijo 3 chars) ---
     if i > 1:
         word2 = tokens[i - 2]
         features.update(
             {
                 "-2:word.lower()": word2.lower(),
-                "-2:word.istitle()": word2.istitle(),
-                "-2:word.isupper()": word2.isupper(),
+                "-2:word[-3:]": word2[-3:],
             }
         )
 
+    # --- Contexto: token siguiente i+1 ---
     if i < len(tokens) - 1:
         word1 = tokens[i + 1]
         features.update(
             {
                 "+1:word.lower()": word1.lower(),
-                "+1:word.istitle()": word1.istitle(),
                 "+1:word.isupper()": word1.isupper(),
                 "+1:word.isdigit()": word1.isdigit(),
                 "+1:word[-3:]": word1[-3:],
                 "+1:word[-2:]": word1[-2:],
             }
         )
+        features.update({f"+1:{k}": v for k, v in _gazetteer_lookup(word1).items()})
     else:
         features["EOS"] = True
 
+    # --- Contexto: dos tokens siguientes i+2 (simétrico a -2) ---
     if i < len(tokens) - 2:
         word2 = tokens[i + 2]
         features.update(
             {
                 "+2:word.lower()": word2.lower(),
-                "+2:word.istitle()": word2.istitle(),
-                "+2:word.isupper()": word2.isupper(),
+                "+2:word[-3:]": word2[-3:],
             }
         )
 
-    if is_numeric_candidate:
-        anchor_flags, anchor_unit, anchor_distance = _scan_next_anchors(
-            tokens, i, max_offset=3
-        )
+    # --- Anclaje semántico por unidades en ventana t+1..t+3 ---
+    # Disparo: cualquier token con al menos un dígito (notebook_v2 SIMPLE).
+    if any(c.isdigit() for c in word):
+        anchor_flags, anchor_distance = _scan_next_anchors(tokens, i, max_offset=3)
         features.update(
             {
-                "num.anchor.any_next": any(anchor_flags.values()),
                 "num.anchor.next.pressure": anchor_flags["pressure"],
                 "num.anchor.next.volume": anchor_flags["volume"],
                 "num.anchor.next.saturation": anchor_flags["saturation"],
-                "num.anchor.next.oxygen_fraction": anchor_flags["oxygen_fraction"],
                 "num.anchor.next.resp_rate": anchor_flags["resp_rate"],
                 "num.anchor.next.heart_rate": anchor_flags["heart_rate"],
                 "num.anchor.next.temperature": anchor_flags["temperature"],
                 "num.anchor.next.chemistry": anchor_flags["chemistry"],
                 "num.anchor.next.weight": anchor_flags["weight"],
                 "num.anchor.next.height": anchor_flags["height"],
+                "num.anchor.next.age": anchor_flags["age"],
                 "num.anchor.next.ratio_ie": anchor_flags["ratio_ie"],
-                "num.anchor.next.unit": anchor_unit if anchor_unit else "__NONE__",
                 "num.anchor.next.d1": anchor_distance == 1,
                 "num.anchor.next.d2": anchor_distance == 2,
                 "num.anchor.next.d3": anchor_distance == 3,
@@ -418,7 +555,8 @@ class CRFExtractor:
         if not tokens:
             return []
 
-        X = [_token2features(tokens, i) for i in range(len(tokens))]
+        pos_tags = _pos_tag_sentence(tokens)
+        X = [word2features(tokens, i, pos_tags=pos_tags) for i in range(len(tokens))]
 
         try:
             y_pred = self.model.predict([X])[0]

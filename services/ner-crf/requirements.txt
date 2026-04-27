@@ -14,3 +14,6 @@ pydantic-settings>=2.0.0
 # --- ML / CRF ---
 sklearn-crfsuite>=0.3.6
 
+# --- NLP / POS Tagging ---
+spacy>=3.7.0
+

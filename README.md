@@ -163,21 +163,22 @@ MedAI recognizes clinical entities specific to mechanical ventilation notes:
 | `PEEP` | Positive end-expiratory pressure | 8 cmH2O |
 | `FR` | Respiratory rate | 14/20 rpm |
 | `VT` | Tidal volume | 420 mL |
-| `FLUJO` | Flow rate | 40 L/min |
 | `I_E` | Inspiratory/Expiratory ratio | 1:2 |
-| `SENS` | Sensitivity | -2 cmH2O |
+
+### Ventilation Response
+| Entity | Description | Example |
+|--------|-------------|---------|
+| `SAO2` | Oxygen saturation | 95% |
 
 ### Vital Signs
 | Entity | Description | Example |
 |--------|-------------|---------|
 | `TEMP` | Body temperature | 38.5 C |
-| `PA` | Blood pressure | 120/80 mmHg |
-| `PAS` | Systolic blood pressure | 120 mmHg |
-| `PAD` | Diastolic blood pressure | 80 mmHg |
+| `PA` | Blood pressure (systolic/diastolic) | 120/80 mmHg |
 | `PAM` | Mean arterial pressure | 93 mmHg |
 | `FC` | Heart rate | 92 lpm |
-| `SAO2` | Oxygen saturation | 95% |
 | `GLICEMIA` | Blood glucose | 110 mg/dL |
+| `POSTURA` | Patient positioning | Prono |
 
 ### Arterial Blood Gases
 | Entity | Description | Example |
@@ -188,13 +189,6 @@ MedAI recognizes clinical entities specific to mechanical ventilation notes:
 | `HCO3` | Bicarbonate | 24 mEq/L |
 | `BE` | Base excess | -2 mEq/L |
 | `PAFI` | PaO2/FiO2 ratio | 250 |
-
-### Ventilation Response
-| Entity | Description | Example |
-|--------|-------------|---------|
-| `PP` | Plateau pressure | 25 cmH2O |
-| `PMES` | Meseta pressure | 23 cmH2O |
-| `PM` | Mean pressure | 15 cmH2O |
 
 ### Anthropometry
 | Entity | Description | Example |
@@ -207,7 +201,6 @@ MedAI recognizes clinical entities specific to mechanical ventilation notes:
 | Entity | Description | Example |
 |--------|-------------|---------|
 | `DX` | Diagnosis | Neumonia adquirida en comunidad |
-| `POSTURA` | Patient position | Prono |
 
 ## Configuration
 

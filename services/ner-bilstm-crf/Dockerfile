@@ -1,13 +1,15 @@
 # ==============================================================================
 # MedAI BiLSTM-CRF NER Service - Dockerfile
 # ==============================================================================
-# TensorFlow-based image for BiLSTM NER service (BiLSTM-CRF).
+# TensorFlow 2.15.1 + Keras 2.15 image para el servicio BiLSTM-CRF NER.
+# El modelo fue entrenado en Python 3.10 (WSL local) con TF 2.15.1 + Keras 2.15.
+# Python 3.10 requerido por tensorflow-addons 0.23.0 (CRF layer).
 # Model files are included in the image for fast startup.
 #
 # Image size: ~1.2GB (TensorFlow + model files)
 # Startup time: 5-10s (model loading from disk)
 
-FROM python:3.11-slim
+FROM python:3.10-slim
 
 # Install system dependencies for TensorFlow
 RUN apt-get update && apt-get install -y --no-install-recommends \

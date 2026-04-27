@@ -30,4 +30,7 @@ python-dotenv>=1.0.0
 docx2txt>=0.8
 pymupdf>=1.23.0
 
+# --- Excel Export ---
+openpyxl>=3.1.0
+
 # NOTE: No torch, tensorflow, transformers, anthropic, openai

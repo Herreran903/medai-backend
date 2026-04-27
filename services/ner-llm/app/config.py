@@ -55,10 +55,6 @@ class Settings(BaseSettings):
         default=4000,
         description="Maximum completion tokens for GPT responses",
     )
-    prompt_mode: str = Field(
-        default="few_shot",
-        description="Prompting mode: zero_shot or few_shot",
-    )
     gpt_max_retries: int = Field(
         default=3,
         description="Max retries for GPT extraction when payload/transport fails",

@@ -65,15 +65,10 @@ class Entity(BaseModel):
             - ``PEEP``: Positive end-expiratory pressure (cmH2O)
             - ``FR``: Respiratory rate (breaths/min)
             - ``VT``: Tidal volume (mL)
-            - ``FLUJO``: Inspiratory flow (L/min)
             - ``I_E``: Inspiration:expiration ratio
-            - ``SENS``: Trigger sensitivity
 
         **Ventilation Response:**
             - ``SAO2``: Oxygen saturation (%)
-            - ``PP``: Peak airway pressure (cmH2O)
-            - ``PMES``: Plateau pressure (cmH2O)
-            - ``PM``: Mechanical power
 
         **Anthropometrics:**
             - ``EDAD``: Patient age (years)
@@ -83,12 +78,16 @@ class Entity(BaseModel):
         **Vital Signs:**
             - ``TEMP``: Body temperature (°C)
             - ``PA``: Blood pressure (mmHg)
+            - ``PAM``: Mean arterial pressure (mmHg)
             - ``FC``: Heart rate (bpm)
             - ``GLICEMIA``: Blood glucose (mg/dL)
+            - ``POSTURA``: Patient positioning
 
         **Arterial Blood Gases:**
             - ``PH``: Arterial pH
             - ``PACO2``: Partial pressure of CO2 (mmHg)
+            - ``HCO3``: Bicarbonate (mmol/L)
+            - ``BE``: Base excess (mmol/L)
             - ``PAO2``: Partial pressure of O2 (mmHg)
             - ``PAFI``: PaO2/FiO2 ratio
 

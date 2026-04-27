@@ -93,16 +93,14 @@ async def startup_event():
             raise ValueError("OPENAI_API_KEY is required")
 
         logger.info(
-            "Initializing LLMExtractor (model=%s, prompt_mode=%s)",
+            "Initializing LLMExtractor (model=%s, prompt=zero-shot)",
             settings.gpt_model,
-            settings.prompt_mode,
         )
         _extractor = LLMExtractor(
             api_key=settings.openai_api_key,
             model=settings.gpt_model,
             temperature=settings.gpt_temperature,
             max_output_tokens=settings.gpt_max_output_tokens,
-            prompt_mode=settings.prompt_mode,
             max_retries=settings.gpt_max_retries,
             retry_sleep=settings.gpt_retry_sleep_sec,
         )

@@ -5,24 +5,7 @@
 # Modificar aqui para cambiar el comportamiento del LLM sin tocar el notebook.
 
 import json
-from pathlib import Path
-from typing import List, Optional
-
-# Ruta por defecto del archivo de ejemplos few-shot
-_DEFAULT_FEW_SHOT_PATH = (
-    Path(__file__).resolve().parent / "examples" / "few_shot_examples.json"
-)
-
-
-def load_few_shot_examples(path: Optional[Path] = None) -> List[dict]:
-    """Carga ejemplos few-shot desde JSON generado por data/scripts/generate_few_shot_examples.py."""
-    path = Path(path) if path else _DEFAULT_FEW_SHOT_PATH
-    if not path.exists():
-        return []
-    with open(path, encoding="utf-8") as f:
-        payload = json.load(f)
-    return payload.get("examples", [])
-
+from typing import List
 
 # =============================================================================
 # SYSTEM PROMPT
@@ -48,146 +31,168 @@ EXTRACTION_PROMPT = """Eres un experto en extraccion de entidades clinicas de no
 
 Tu tarea es extraer UNICAMENTE las entidades clinicas mencionadas en el texto.
 
-IMPORTANTE - REGLAS DE EXTRACCION:
-1. SIEMPRE incluir la etiqueta/sigla cuando este presente en el texto junto al valor
-2. Ejemplo: "FiO2 60%" -> extraer "FiO2 60%" (incluir la etiqueta "FiO2")
-3. Ejemplo: "PEEP 8 cmH2O" -> extraer "PEEP 8 cmH2O" (incluir la etiqueta "PEEP")
-4. Ejemplo: "VT 420 ml" -> extraer "VT 420 ml" (incluir la etiqueta "VT")
-5. Ejemplo: "modo AC VC" -> extraer "AC VC" (NO incluir la palabra descriptiva "modo")
-6. Si SOLO aparece el valor sin etiqueta en el texto, extraer solo el valor
+REGLAS GENERALES:
+1. Anota solo menciones textuales explicitas.
+2. Si una entidad aparece varias veces y cada aparicion es valida, anota todas sus menciones.
+3. Cuando ayude a identificar mejor la entidad, conserva la mencion mas completa.
+4. En entidades numericas, no anotes solo el numero si el texto incluye tambien el nombre del parametro, su sigla o la unidad. Prefiere spans completos como "FC 96 lpm", "FiO2 40 %", "TA 128/63 mmHg", "pH 7.32".
+5. No extiendas el span a texto adicional que no haga parte de la entidad.
+6. No anotes metas terapeuticas, rangos objetivo, intervalos de referencia ni umbrales deseados. Solo mediciones reales del paciente.
+7. No anotes duplicados artificiales ni fragmentos incompletos si existe una mencion completa claramente preferible.
+
+ENTIDADES QUE NO SE ANOTAN: PAS, PAD. Nunca uses estas etiquetas.
 
 **CONFIGURACION DE VENTILACION:**
-- MODO: Modo del ventilador (sin palabras descriptivas como "modo", "en modo", "VMI")
+- MODO: Modo del ventilador.
+  Si aparece la palabra "modo", intentar conservarla dentro del span.
+  Si el texto solo trae la sigla del modo sin la palabra "modo", anotar la sigla sola.
+  Si el modo aparece en forma descriptiva, anotar la formulacion completa relevante.
+  No extender el span a parametros adicionales pegados que no hagan parte del modo.
   Variantes: AC, VC, PC, PC+, VC+, SIMV, PSV, CPAP, PRVC, ACV, VCV, PCV, BiPAP
-  Ejemplos: "modo AC VC" -> extraer "AC VC", "en modo PC+" -> extraer "PC+", "VMI modo SIMV" -> extraer "SIMV"
+  Correcto: "modo AC VC", "PC+", "VMI modo SIMV", "controlado por volumen", "modo VC", "PRVC", "ACV"
+  Incorrecto: "modo VC:380" completo como un solo span si ":380" corresponde a otro parametro
 
-- FIO2: Fraccion inspirada de oxigeno (incluir etiqueta + valor)
+- FIO2: Fraccion inspirada de oxigeno
   Variantes: FiO2, FIO2, fio2, Fi02, fraccion inspirada de oxigeno
-  Ejemplos: "FiO2 40%", "fio2: 0.5", "FIO2 80%", "Fi02 100"
+  Correcto: "FiO2 40%", "fio2: 0.5", "FIO2 80%", "Fi02 100", "FiO2 40 %"
 
 - PEEP: Presion positiva al final de la espiracion
   Variantes: PEEP, peep, Peep
-  Ejemplos: "PEEP 8", "peep: 10", "PEEP 12 cmH2O"
+  Correcto: "PEEP 8", "peep: 10", "PEEP 12 cmH2O"
 
 - FR: Frecuencia respiratoria
-  Variantes: FR, fr, Freq resp, frecuencia respiratoria, rpm
-  Ejemplos: "FR 14/20", "fr: 18 rpm", "FR 20", "frecuencia respiratoria 22"
+  Variantes: FR, fr, freq resp, frecuencia respiratoria, rpm
+  Correcto: "FR 14/20", "fr: 18 rpm", "FR 20", "frecuencia respiratoria 22", "FR 18"
 
-- VT: Volumen tidal/corriente
-  Variantes: VT, Vt, vt, Vol, vol, VC (volumen corriente), volumen tidal
-  Ejemplos: "VT 380", "Vt: 450 mL", "Vol 480/490", "vol corriente 420"
-
-- FLUJO: Flujo inspiratorio
-  Variantes: Flujo, flujo, flow
-  Ejemplos: "Flujo 45", "flujo 50 L/min"
+- VT: Volumen tidal o volumen corriente
+  Variantes: VT, Vt, vt, Vol, vol, volumen tidal, volumen corriente
+  Correcto: "VT 380", "Vt: 450 mL", "Vol 480/490", "vol corriente 420"
 
 - I_E: Relacion inspiracion:espiracion
-  Variantes: I:E, I/E, relacion I:E, Rel I:E, RIE
-  Ejemplos: "I:E 1:2", "1:2", "relacion 1:3", "Rel. 1:1.5"
-
-- SENS: Sensibilidad del trigger
-  Variantes: Sens, sens, sensibilidad, trigger
-  Ejemplos: "Sens 2", "sensibilidad: 3", "sens: 1.5"
+  Anotar cuando el texto identifique claramente la relacion. Conservar la forma completa.
+  No anotar fragmentos ambiguos o numeros sueltos que no expresen claramente la relacion.
+  Variantes: I:E, I/E, relacion I:E, Rel I:E, RIE, IE
+  Correcto: "I:E 1:2", "IE:1:2.7", "Relacion I:E 1:3", "Rel. 1:1.5"
+  Incorrecto: "2.0" aislado, "IE 1.20" si no queda clara la relacion, fragmentos truncados como "I \"
 
 **RESPUESTA A LA VENTILACION:**
-- SAO2: Saturacion de oxigeno
+- SAO2: Saturacion de oxigeno del paciente. No anotar saturaciones venosas (SvO2).
   Variantes: SaO2, SAO2, Sat, sat, saturacion, SO2, SpO2, SatO2
-  Ejemplos: "SaO2 95%", "Sat 92%", "saturacion 97%", "SO2 94%", "SpO2 98"
-
-- PP: Presion pico de via aerea
-  Variantes: PP, Ppico, P pico, presion pico, peak pressure
-  Ejemplos: "PP 25", "Ppico: 22", "presion pico 28", "P pico 30"
-
-- PMES: Presion meseta/plateau
-  Variantes: Pmes, Pmeseta, P meseta, plateau, presion meseta, P plateau
-  Ejemplos: "Pmeseta 18", "plateau 20", "P meseta: 22", "presion plateau 19"
-
-- PM: Poder mecanico
-  Variantes: PM, poder mecanico, mechanical power
+  Correcto: "SaO2 95%", "Sat 92%", "saturacion 97%", "SO2 94%", "SpO2 98", "SatO2 97 %"
+  Incorrecto: "SvO2 73%", "saturaciones por encima de 90%" (meta)
 
 **ANTROPOMETRICOS:**
-- EDAD: Edad del paciente - SOLO valor y unidad
+- EDAD: Edad del paciente tal como aparece escrita en la nota.
+  Normalmente numero + "anos". No exigir palabra introductoria fija.
+  No mezclar con edad al diagnostico o codificacion diagnostica.
   Variantes: anos, anos de edad, a, years
-  Correcto: "78 anos", "65 anos", "42 a"
-  Incorrecto: "edad 78 anos", "paciente de 65 anos de edad", "Edad: 70"
+  Correcto: "78 anos", "65 anos", "42 a", "paciente de 64 anos", "femenina de 35 anos"
+  Incorrecto: "edad avanzada", "adulto mayor", "Edad al diagnostico: 61 anos"
 
-- PESO: Peso corporal - SOLO valor y unidad, NO la palabra "peso"
-  Variantes: kg, kilos, kilogramos, Kg, KG
-  Correcto: "65 kg", "72 kg", "95", "80 kilos"
-  Incorrecto: "Peso 65 kg", "peso: 72 kg", "Peso(Kg): 70"
+- PESO: Peso corporal
+  Variantes: peso, kg, kilos, kilogramos, Kg, KG
+  Correcto: "Peso : 60 Kg", "60 kg", "Peso aprox : 100 kg", "Peso: 90 kg"
+
+- TALLA: Estatura del paciente
+  Variantes: talla, cm, m, metros, centimetros, estatura
+  Correcto: "Talla 170 cm", "1.72 m", "estatura: 165 cm"
 
 **SIGNOS VITALES:**
 - TEMP: Temperatura corporal
   Variantes: T, Temp, temperatura, temp max, temp min, celsius
-  Ejemplos: "T 36.5", "Temp: 37.2", "36.8 C", "T 37C", "temperatura 38.5"
+  Correcto: "T 36.5", "Temp: 37.2", "36.8 C", "T 37C", "temperatura 38.5"
 
-- PA: Presion arterial completa (sistolica/diastolica)
-  Variantes: PA, TA, presion arterial, tension arterial, PA(mmHg)
-  Ejemplos: "PA 120/80", "TA: 130/85", "TA 110/70 mmHg", "presion arterial 125/80"
-
-- PAS: Presion arterial sistolica SOLAMENTE
-  Variantes: PAS, TAS, presion sistolica, tension sistolica, sistolica
-  Ejemplos: "TAS 125", "PAS 140", "TAS menor 150", "sistolica 130"
+- PA: Presion arterial completa. Anotar la mencion completa incluyendo sistolica/diastolica y unidad.
+  No separar sistolica y diastolica en etiquetas distintas. No anotar metas o rangos objetivo.
+  Variantes: TA, PA, presion arterial, tension arterial
+  Correcto: "TA 128/63 mmHg", "PA 110/70", "TA: 130/80", "TA 120/63 mmHg"
+  Incorrecto: "TAS < 140 mmHg" (meta), separar en PAS y PAD
 
 - PAM: Presion arterial media
   Variantes: PAM, TAM, presion arterial media, tension arterial media, MAP
-  Ejemplos: "PAM 85", "TAM: 78", "PAM 65 mmHg", "TAM 70"
+  Correcto: "PAM 85", "TAM: 78", "PAM 65 mmHg", "TAM 84 mmHg"
 
 - FC: Frecuencia cardiaca
   Variantes: FC, fc, frecuencia cardiaca, pulso, lpm, lat/min, latidos
-  Ejemplos: "FC 82", "FC: 75 lpm", "fc 90", "frecuencia cardiaca 88"
+  Correcto: "FC 82", "FC: 75 lpm", "fc 90", "frecuencia cardiaca 88", "FC 96 lpm"
 
-- GLICEMIA: Glucosa/glucometria en sangre
-  Variantes: Glicemia, glicemia, glucometria, glucosa, HGT, dextrostix, mg/dL
-  Ejemplos: "Glicemia 120", "glucometria: 145", "125-130-140 mg/dL", "HGT 110"
+- GLICEMIA: Glucosa o glucometria en sangre.
+  Anotar valores realmente registrados del paciente, incluidos valores puntuales o series reales.
+  No anotar metas como "entre 140 y 180 mg/dl" o "por debajo de 200 mg/dl".
+  Variantes: glicemia, glucometria, glucosa, HGT, dextrostix, mg/dL
+  Correcto: "Glicemia 120", "glucometria: 145", "125-130-140 mg/dL", "HGT 110", "Glucometrias: 125 - 110 mg/dl"
+  Incorrecto: "entre 140 y 180 mg/dl" (meta), "por debajo de 200 mg/dl" (meta)
 
-- POSTURA: Posicion/posicionamiento del paciente
-  Variantes: posicion, postura, decubito, cabecera, fowler, semifowler, prono, supino
-  Ejemplos: "Cabecera 30", "supino", "prono", "decubito lateral", "semifowler", "Cabecera 45 grados", "posicion fowler"
+- POSTURA: Posicion o posicionamiento del paciente.
+  Conservar la formulacion mas completa disponible.
+  Incluir tanto referencias a posicion como a cabecera cuando hagan parte clara de la postura.
+  Variantes: posicion, postura, decubito, cabecera, fowler, semifowler, prono, supino, semisentado
+  Correcto: "Cabecera 30", "supino", "prono", "decubito lateral", "semifowler", "Cabecera 45 grados", "cabecera a 30 grados", "semisentado"
 
-**DIAGNOSTICOS (DX):**
-- DX: Diagnosticos clinicos - extraer SOLO el nucleo diagnostico (2-5 palabras max)
-  Variantes: diagnostico, Dx, dx, impresion diagnostica
-  Correcto: "SDRA severo", "Falla ventilatoria", "Shock septico", "NAV", "Neumonia asociada a ventilador"
-  Correcto: "HTA", "DM2", "EPOC", "IRC", "ERC", "IAM" (siglas de diagnosticos)
-  Incorrecto: "paciente con antecedente de falla ventilatoria tipo 2" (muy largo)
-  Incorrecto: "se considera SDRA severo por criterios de Berlin" (incluye explicacion)
+**DIAGNOSTICOS:**
+- DX: Diagnostico, problema clinico, comorbilidad o antecedente relevante mencionado en la nota.
+  En listados estructurados, conservar la formulacion diagnostica completa cuando sea clara.
+  En prosa narrativa, anotar la mencion diagnostica principal sin arrastrar informacion extra.
+  Variantes: diagnostico, Dx, dx, impresion diagnostica, antecedentes, comorbilidades
+  Correcto: "INSUFICIENCIA RESPIRATORIA AGUDA", "Shock septico", "Pancreatitis aguda", "SDRA severo", "neumonia asociada a ventilacion mecanica", "HTA", "DIABETES MELLITUS", "Enfermedad renal cronica agudizada"
+  Incorrecto: "TEP descartado" (descartado), "posible sepsis" (hipotesis no confirmada), "SARS-CoV-2" aislado sin formulacion diagnostica, "laparotomia exploratoria" (procedimiento)
+
+  Reglas para DX:
+  1. No anotar diagnosticos descartados.
+  2. No anotar hipotesis diagnosticas no confirmadas cuando el texto las presenta explicitamente como posibilidad.
+  3. No anotar procedimientos quirurgicos si no constituyen un diagnostico afirmado.
+  4. No tratar microorganismos aislados como DX si no aparecen dentro de una formulacion diagnostica explicita.
+  5. No agregar explicaciones narrativas ni texto accesorio fuera de la mencion diagnostica.
 
 **GASES ARTERIALES:**
-- PH: pH sanguineo
-  Variantes: pH, ph, PH
-  Ejemplos: "pH 7.35", "ph: 7.42", "PH 7.28"
+  Reglas comunes: anotar la mencion completa cuando parametro y valor aparezcan juntos.
+  No anotar gases venosos ni contextos claramente venosos (encabezados como "gases venosos", "GV", "venosos").
+  No anotar metas, rangos objetivo ni intervalos de referencia.
+  No anotar numeros aislados si el parametro no esta identificado claramente.
 
-- PACO2: Presion parcial de CO2
+- PH: pH sanguineo arterial
+  Variantes: pH, ph, PH
+  Correcto: "pH 7.35", "ph: 7.42", "PH 7.28", "pH 7.31"
+
+- PACO2: Presion parcial de CO2 arterial
   Variantes: PaCO2, PCO2, pCO2, CO2, paco2
-  Ejemplos: "PaCO2 42", "pCO2: 38", "PCO2 45", "CO2 40"
+  Correcto: "PaCO2 42", "pCO2: 38", "PCO2 45", "PaCO2 41 mmHg"
+  Incorrecto: "PvCO2 45" (venoso), "CO2 35-40" si es meta o rango deseado
 
 - HCO3: Bicarbonato
   Variantes: HCO3, HCO3-, bicarbonato, Bic
-  Ejemplos: "HCO3 24", "bicarbonato: 22", "HCO3- 26", "Bic 23"
+  Correcto: "HCO3 24", "bicarbonato: 22", "HCO3- 26", "HCO3 21"
 
 - BE: Exceso de base
   Variantes: BE, EB, exceso de base, base excess
-  Ejemplos: "BE -2", "EB: +1", "BE 3.5", "exceso de base -4"
+  Correcto: "BE -2", "EB: +1", "BE 3.5", "exceso de base -4", "BE -4"
 
-- PAO2: Presion parcial de O2
+- PAO2: Presion parcial de O2 arterial
   Variantes: PaO2, PO2, pO2, pao2
-  Ejemplos: "PaO2 85", "pO2: 92", "PO2 78"
+  Correcto: "PaO2 85", "pO2: 92", "PO2 78", "PaO2 62 mmHg"
 
 - PAFI: Relacion PaO2/FiO2
   Variantes: PAFI, PaFi, PaFiO2, pafi, Pa/Fi, relacion PaO2/FiO2, indice de Kirby
-  Ejemplos: "PaFi 180", "PAFI: 250", "pafi 120", "Pa/Fi 200"
+  Correcto: "PaFi 180", "PAFI: 250", "pafi 120", "Pa/Fi 200", "PAFI 152"
+  Incorrecto: "PAFI mayor a 150" (meta)
 
-**REGLAS CRITICAS:**
-1. NO incluir palabras descriptivas como "modo", "peso", "edad", "temperatura" antes del valor
-2. SI incluir siglas medicas (FiO2, PEEP, FC, TAM, etc.) cuando estan junto al valor numerico
-3. Para DX: extraer solo el diagnostico, no la oracion completa
-4. Buscar TODAS las variantes de cada entidad listadas arriba
-5. Extraer TODAS las entidades que encuentres, priorizar recall sobre precision
-6. OBLIGATORIO: Calcular start y end (offsets de caracteres) para cada entidad
-   - start: posicion del primer caracter de la entidad en el texto (0-indexed)
-   - end: posicion del caracter DESPUES del ultimo caracter de la entidad
-   - Ejemplo: en "Peso 65 kg", si extraes "65 kg", start=5, end=10
+**CRITERIOS DE EXCLUSION GLOBAL:**
+1. No anotar valores inferidos desde campos estructurados no visibles en el texto.
+2. No anotar metas terapeuticas ni rangos objetivo como si fueran mediciones reales.
+3. No anotar gases venosos dentro de etiquetas arteriales.
+4. No anotar PAS ni PAD (estas etiquetas no existen en el esquema).
+5. No anotar fragmentos incompletos si el texto ofrece una version completa mas adecuada.
+
+**CRITERIOS DE ANOTACION:**
+1. Incluir siglas, abreviaturas y unidades cuando hagan parte directa de la mencion anotada.
+2. Para EDAD, anotar la expresion etaria y no exigir un prefijo explicito.
+3. Para DX, anotar la mencion diagnostica sin arrastrar contexto narrativo extra.
+4. Buscar TODAS las variantes de cada entidad listadas arriba.
+5. Extraer TODAS las entidades que encuentres, priorizando recall sin inventar entidades.
+6. OBLIGATORIO: calcular start y end para cada entidad.
+   - start: posicion del primer caracter de la entidad en el texto
+   - end: posicion del caracter inmediatamente posterior al ultimo caracter de la entidad
+   - Los offsets deben quedar alineados exactamente con el texto de entrada
 
 Texto a analizar:
 {text}
@@ -200,90 +205,24 @@ Extrae las entidades en formato JSON estructurado."""
 # =============================================================================
 
 
-def _format_few_shot_examples(few_shot_examples: List[dict]) -> str:
-    """Convierte ejemplos few-shot (texto + entidades) en bloque de prompt."""
-    blocks = []
-    for idx, ex in enumerate(few_shot_examples or [], start=1):
-        if not isinstance(ex, dict):
-            continue
-        text = str(ex.get("text") or "").strip()
-        entities = ex.get("entities") or []
-        if not text:
-            continue
-
-        normalized_entities = []
-        for ent in entities:
-            if not isinstance(ent, dict):
-                continue
-            etype = str(ent.get("type") or "").strip().upper()
-            etext = str(ent.get("text") or "").strip()
-            if not etype or not etext:
-                continue
-
-            # Si el ejemplo no trae offsets, se estiman para mantener formato consistente.
-            start = ent.get("start")
-            end = ent.get("end")
-            if start is None or end is None:
-                hit = text.find(etext)
-                if hit >= 0:
-                    start = hit
-                    end = hit + len(etext)
-
-            if start is None or end is None:
-                continue
-
-            normalized_entities.append(
-                {"type": etype, "text": etext, "start": int(start), "end": int(end)}
-            )
-
-        blocks.append(
-            "Ejemplo few-shot "
-            + str(idx)
-            + ":\nTexto:\n"
-            + text
-            + "\nSalida esperada JSON:\n"
-            + json.dumps({"entities": normalized_entities}, ensure_ascii=False)
-        )
-
-    return "\n\n".join(blocks)
-
-
 def build_user_prompt(
     text: str,
     entity_types: List[str],
     schema: dict,
     *,
     include_schema: bool = True,
-    prompt_mode: str = "zero_shot",
-    few_shot_examples: Optional[List[dict]] = None,
 ) -> str:
-    """Construye el prompt de usuario para extraccion de entidades."""
+    """Construye el prompt de usuario para extraccion de entidades (zero-shot)."""
     labels = ", ".join(entity_types) if entity_types else "(sin etiquetas)"
     schema_block = ""
     if include_schema:
         schema_json = json.dumps(schema, ensure_ascii=False)
         schema_block = "Esquema JSON estricto:\n" + schema_json + "\n\n"
 
-    prompt_mode = str(prompt_mode or "zero_shot").strip().lower()
-    few_shot_examples = few_shot_examples or []
-
-    few_shot_block = ""
-    if prompt_mode == "few_shot":
-        few_shot_rendered = _format_few_shot_examples(few_shot_examples)
-        if few_shot_rendered:
-            few_shot_block = (
-                "\n\nEjemplos de referencia (few-shot):\n"
-                + few_shot_rendered
-                + "\n\nAhora extrae entidades del siguiente texto."
-            )
-
-    base_prompt = EXTRACTION_PROMPT.format(text=text) + few_shot_block
+    base_prompt = EXTRACTION_PROMPT.format(text=text)
     return (
         base_prompt
         + "\n\n"
-        + "Modo de prompting: "
-        + prompt_mode
-        + "\n"
         + "Etiquetas permitidas: "
         + labels
         + "\n"
